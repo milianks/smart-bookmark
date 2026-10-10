@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Check UI accessibility, page conventions, and preservation of settings capabilities."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check provider safety, permissions, strict output validation, and test coverage."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check strict types and typed settings/runtime boundaries."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Check backward-compatible local settings normalization and legacy-data coverage."}
+{"file": ".trellis/tasks/10-10-compact-ai-provider-settings/research/api-protocols.md", "reason": "Verify protocol requests match official API references and shared compatibility limits."}

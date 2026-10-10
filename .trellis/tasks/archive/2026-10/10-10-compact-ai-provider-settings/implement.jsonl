@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "Options-page messaging, API-key privacy, accessible settings controls, and UI state boundaries."}
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Background owns provider requests, permissions, settings, and safe bookmark failure behavior."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Preserve chrome.storage.local state while normalizing the new protocol setting."}
+{"file": ".trellis/tasks/10-10-compact-ai-provider-settings/research/api-protocols.md", "reason": "Verified endpoint, authentication, request, and response contracts for all three protocols."}
