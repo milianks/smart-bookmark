@@ -49,19 +49,30 @@ export class ChromeStateRepository implements StateRepository {
 
 function normalizeState(input: Partial<PersistedState>): PersistedState {
   const defaults = emptyPersistedState();
-  const parsedSettings = SettingsSchema.safeParse(input.settings);
+  const settings = normalizeSettings(input.settings);
   return {
     ...defaults,
     ...input,
     version: 1,
-    settings: parsedSettings.success
-      ? parsedSettings.data
-      : { ...DEFAULT_SETTINGS },
+    settings,
     jobs: input.jobs && typeof input.jobs === 'object' ? input.jobs : {},
     reviews: input.reviews && typeof input.reviews === 'object' ? input.reviews : {},
     cache: input.cache && typeof input.cache === 'object' ? input.cache : {},
     activities: Array.isArray(input.activities) ? input.activities.slice(-100) : [],
   };
+}
+
+function normalizeSettings(input: unknown): PersistedState['settings'] {
+  const candidate: Record<string, unknown> = { ...DEFAULT_SETTINGS };
+  if (input && typeof input === 'object' && !Array.isArray(input)) {
+    const stored = input as Record<string, unknown>;
+    for (const key of Object.keys(DEFAULT_SETTINGS) as Array<keyof typeof DEFAULT_SETTINGS>) {
+      const parsed = SettingsSchema.shape[key].safeParse(stored[key]);
+      if (parsed.success) candidate[key] = parsed.data;
+    }
+  }
+  const parsed = SettingsSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : { ...DEFAULT_SETTINGS };
 }
 
 export class MemoryStateRepository implements StateRepository {

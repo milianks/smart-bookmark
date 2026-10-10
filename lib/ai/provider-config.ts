@@ -1,4 +1,7 @@
+import type { ProviderProtocol } from '../../types/domain';
+
 export interface ProviderConfig {
+  protocol: ProviderProtocol;
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -13,7 +16,7 @@ export function normalizeBaseUrl(raw: string): string {
   if (url.protocol !== 'https:' && !(url.protocol === 'http:' && isLoopback)) {
     throw new Error('API 地址必须使用 HTTPS；只有本机回环地址可以使用 HTTP');
   }
-  const path = url.pathname.replace(/\/+$/, '').replace(/\/(chat\/completions|models)$/i, '');
+  const path = url.pathname.replace(/\/+$/, '').replace(/\/(messages|chat\/completions|responses|models)$/i, '');
   return `${url.origin}${path === '/' ? '' : path}`;
 }
 
@@ -24,4 +27,13 @@ export function originPermissionPattern(raw: string): string {
 
 export function chatCompletionsUrl(raw: string): string {
   return `${normalizeBaseUrl(raw)}/chat/completions`;
+}
+
+export function providerUrl(raw: string, protocol: ProviderProtocol): string {
+  const suffix = protocol === 'anthropic-messages'
+    ? '/messages'
+    : protocol === 'openai-responses'
+      ? '/responses'
+      : '/chat/completions';
+  return `${normalizeBaseUrl(raw)}${suffix}`;
 }

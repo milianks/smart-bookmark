@@ -90,3 +90,69 @@ try {
 ```
 
 This is the live-source/target and durable-intent sequence used by `OrganizerService.automaticMove`. A rejected call can still have changed the browser state, so reconciliation compares the actual parent with both recorded parents before deciding whether the operation completed or failed. Keep Chrome API mutation inside the organizer and validate every ID against the current bookmark tree.
+
+## Scenario: Multi-protocol AI provider and connection test
+
+### 1. Scope / Trigger
+
+Use this contract when changing provider protocol selection, provider request construction, saved settings, or the settings-page connection test. The background remains the only owner of stored settings and provider requests.
+
+### 2. Signatures
+
+- `ProviderProtocol`: `anthropic-messages | openai-chat-completions | openai-responses`.
+- `ProviderConfig`: `{ protocol, baseUrl, model, apiKey }`.
+- `ClassifierProvider.classify(input, folders, config): Promise<ClassificationResult>`.
+- `ClassifierProvider.test(config): Promise<void>` sends one synthetic classification and has no bookmark or persistence dependency.
+
+### 3. Contracts
+
+- `baseUrl` is user-entered, HTTPS except loopback HTTP, and may include a version prefix such as `/v1`. Append `/messages`, `/chat/completions`, or `/responses` according to `protocol`; strip a recognized endpoint suffix first so it is not duplicated.
+- Anthropic Messages uses `x-api-key`, `anthropic-version: 2023-06-01`, `system`, one user message, and text content blocks. The two OpenAI protocols use bearer auth; Chat Completions uses `messages` and `choices[0].message.content`, while Responses uses `instructions`/`input` and assistant `output_text` content blocks.
+- All protocols share the same classification prompt and strict `ClassificationResultSchema`. A successful HTTP status or parseable provider envelope alone is not success.
+- The test uses a synthetic `example.test` bookmark and `synthetic-folder`; it must not read or mutate real bookmarks, write cache/activity, or accept a destination outside the synthetic folder set.
+- Missing legacy `protocol` normalizes to `openai-chat-completions`. Keep the API key local and write-only; never expose it through dashboard data, logs, notifications, or provider errors. Request only the configured origin permission.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Invalid base URL or unsupported protocol | Reject before sending a request |
+| Configured origin permission missing | Do not fetch; keep the bookmark in place |
+| Timeout, network failure, 429, or 5xx | Return a sanitized bounded error; retry only transient failures |
+| Non-2xx response, invalid envelope/JSON, or invalid classification schema | Fail safely without exposing response text or API key |
+| Test result references a non-synthetic destination | Reject the test; do not touch user bookmark state |
+
+### 5. Good / Base / Bad Cases
+
+- **Good**: `https://provider.example/v1` with `openai-responses` calls `/v1/responses`, extracts assistant text, validates the result, and caches only normal classification output.
+- **Base**: Legacy settings omit `protocol`; load keeps the existing URL, model, key, and organization preferences while selecting Chat Completions.
+- **Bad**: A 200 response contains malformed or schema-invalid output; report a safe failure and leave the bookmark unchanged.
+
+### 6. Tests Required
+
+- Stub `fetch`; never send automated tests to a configured external provider.
+- For each protocol, assert exact URL, auth/version headers, request body, response text extraction, and strict result validation.
+- Assert endpoint suffix de-duplication, legacy setting preservation, protocol-sensitive cache keys, synthetic-only test input, and no test writes to cache/activity or bookmark ports.
+- Assert timeout, network/HTTP errors, malformed JSON, oversized or invalid provider output, and invalid synthetic destinations fail safely without revealing secrets.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const response = await fetch(`${baseUrl}/chat/completions`, request);
+if (response.ok) return;
+```
+
+This ignores the selected protocol and treats HTTP success as a valid classification.
+
+#### Correct
+
+```ts
+const endpoint = providerUrl(config.baseUrl, config.protocol);
+const response = await fetch(endpoint, requestFor(config.protocol, messages));
+const payload = await readProviderPayload(response);
+const result = ClassificationResultSchema.parse(extractText(payload, config.protocol));
+```
+
+Dispatch endpoint, headers, body, and extraction together by the saved protocol, then validate the shared result contract before the organizer can use it.

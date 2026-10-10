@@ -28,9 +28,12 @@ export const ClassificationResultSchema = z.discriminatedUnion('action', [
 export type ClassificationResult = z.infer<typeof ClassificationResultSchema>;
 export type ClassificationSource = 'cache' | 'rule' | 'ai';
 export type OrganizerMode = 'automatic' | 'confirm';
+export const ProviderProtocolSchema = z.enum(['anthropic-messages', 'openai-chat-completions', 'openai-responses']);
+export type ProviderProtocol = z.infer<typeof ProviderProtocolSchema>;
 
 export const SettingsSchema = z.object({
   enabled: z.boolean(),
+  protocol: ProviderProtocolSchema,
   baseUrl: z.string().min(1),
   model: z.string().min(1),
   apiKey: z.string(),
@@ -46,6 +49,7 @@ export type PublicSettings = Omit<Settings, 'apiKey'> & { hasApiKey: boolean };
 
 export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
+  protocol: 'openai-chat-completions',
   baseUrl: 'https://api.openai.com/v1',
   model: 'gpt-4o-mini',
   apiKey: '',

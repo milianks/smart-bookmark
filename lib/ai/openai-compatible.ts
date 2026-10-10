@@ -1,8 +1,9 @@
 import { ClassificationResultSchema, type ClassificationResult, type FolderSummary } from '../../types/domain';
 import { buildClassificationMessages, type ClassificationInput } from './prompts';
-import { chatCompletionsUrl, type ProviderConfig } from './provider-config';
+import { providerUrl, type ProviderConfig } from './provider-config';
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_CLASSIFICATION_TEXT_LENGTH = 16_000;
 const REQUEST_TIMEOUT_MS = 22_000;
 
 export class ProviderError extends Error {
@@ -17,6 +18,10 @@ export interface ClassifierProvider {
   test(config: ProviderConfig): Promise<void>;
 }
 
+/**
+ * Keeps the classifier boundary stable while adapting the three supported
+ * non-streaming JSON APIs to the same prompt and strict result schema.
+ */
 export class OpenAICompatibleProvider implements ClassifierProvider {
   constructor(private readonly fetcher: typeof fetch = fetch) {}
 
@@ -25,18 +30,9 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     folders: FolderSummary[],
     config: ProviderConfig,
   ): Promise<ClassificationResult> {
-    const payload = await this.request(config, {
-      model: config.model,
-      messages: buildClassificationMessages(input, folders),
-      temperature: 0.1,
-      max_tokens: 500,
-    });
-    const choices = payload.choices;
-    if (!Array.isArray(choices)) throw new ProviderError('AI 返回格式不完整', false);
-    const content = choices[0]?.message?.content;
-    if (typeof content !== 'string' || content.length > 16_000) {
-      throw new ProviderError('AI 没有返回可读取的分类内容', false);
-    }
+    const messages = buildClassificationMessages(input, folders);
+    const payload = await this.request(config, buildRequestBody(config, messages));
+    const content = extractClassificationText(payload, config.protocol);
     const parsed = parseJsonContent(content);
     const result = ClassificationResultSchema.safeParse(parsed);
     if (!result.success) throw new ProviderError('AI 分类结果不符合安全格式，书签已保留原位', false);
@@ -44,23 +40,34 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
   }
 
   async test(config: ProviderConfig): Promise<void> {
-    const payload = await this.request(config, {
-      model: config.model,
-      messages: [
-        { role: 'system', content: '只回复 ok。' },
-        { role: 'user', content: '连接测试' },
-      ],
-      max_tokens: 8,
-      temperature: 0,
-    });
-    if (!Array.isArray(payload.choices)) throw new ProviderError('服务已响应，但返回格式不兼容', false);
+    const folders: FolderSummary[] = [{
+      id: 'synthetic-folder',
+      name: 'Synthetic folder',
+      path: 'Synthetic folder',
+    }];
+    const input: ClassificationInput = {
+      title: 'Synthetic developer documentation bookmark',
+      url: 'https://example.test/docs',
+      domain: 'example.test',
+      currentFolder: 'Unsorted bookmarks',
+      currentFolderId: 'synthetic-source',
+    };
+    const result = await this.classify(input, folders, config);
+    const referencesSyntheticFolder = result.action === 'move'
+      ? result.targetFolderId === folders[0]?.id
+      : result.action === 'suggest_folder'
+        ? result.suggestedFolder.parentId === folders[0]?.id
+        : true;
+    if (!referencesSyntheticFolder) {
+      throw new ProviderError('AI 测试结果引用了无效的示例文件夹', false);
+    }
   }
 
   private async request(config: ProviderConfig, body: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (!config.apiKey.trim()) throw new ProviderError('请先配置 API Key', false);
     let endpoint: string;
     try {
-      endpoint = chatCompletionsUrl(config.baseUrl);
+      endpoint = providerUrl(config.baseUrl, config.protocol);
     } catch (error) {
       throw new ProviderError(error instanceof Error ? error.message : 'API 地址无效', false);
     }
@@ -70,10 +77,7 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     try {
       const response = await this.fetcher(endpoint, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${config.apiKey}`,
-          'Content-Type': 'application/json',
-        },
+        headers: requestHeaders(config),
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -103,6 +107,93 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
       clearTimeout(timeout);
     }
   }
+}
+
+type ClassificationMessage = { role: 'system' | 'user'; content: string };
+
+function buildRequestBody(config: ProviderConfig, messages: ClassificationMessage[]): Record<string, unknown> {
+  if (config.protocol === 'anthropic-messages') {
+    return {
+      model: config.model,
+      max_tokens: 500,
+      system: messages[0]?.content ?? '',
+      messages: [{ role: 'user', content: messages[1]?.content ?? '' }],
+    };
+  }
+  if (config.protocol === 'openai-responses') {
+    return {
+      model: config.model,
+      instructions: messages[0]?.content ?? '',
+      input: messages[1]?.content ?? '',
+      max_output_tokens: 500,
+    };
+  }
+  return {
+    model: config.model,
+    messages,
+    temperature: 0.1,
+    max_tokens: 500,
+  };
+}
+
+function requestHeaders(config: ProviderConfig): Record<string, string> {
+  const common = { 'Content-Type': 'application/json' };
+  if (config.protocol === 'anthropic-messages') {
+    return {
+      ...common,
+      'x-api-key': config.apiKey,
+      'anthropic-version': '2023-06-01',
+    };
+  }
+  return { ...common, Authorization: `Bearer ${config.apiKey}` };
+}
+
+function extractClassificationText(payload: Record<string, unknown>, protocol: ProviderConfig['protocol']): string {
+  let content: unknown;
+  if (protocol === 'anthropic-messages') {
+    content = textFromBlocks(payload.content, 'text');
+  } else if (protocol === 'openai-responses') {
+    content = typeof payload.output_text === 'string'
+      ? payload.output_text
+      : responseOutputText(payload.output);
+  } else {
+    const choices = payload.choices;
+    const firstChoice = Array.isArray(choices) ? choices[0] : undefined;
+    const message = firstChoice && typeof firstChoice === 'object' ? firstChoice.message : undefined;
+    content = typeof message === 'object' && message !== null
+      ? (message as Record<string, unknown>).content
+      : undefined;
+    if (Array.isArray(content)) content = textFromBlocks(content, 'text');
+  }
+
+  if (typeof content !== 'string' || content.length > MAX_CLASSIFICATION_TEXT_LENGTH) {
+    throw new ProviderError('AI 没有返回可读取的分类内容', false);
+  }
+  return content;
+}
+
+function responseOutputText(output: unknown): string | undefined {
+  if (!Array.isArray(output)) return undefined;
+  const parts: string[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    if (record.type !== 'message' || record.role !== 'assistant') continue;
+    const text = textFromBlocks(record.content, 'output_text');
+    if (typeof text === 'string') parts.push(text);
+  }
+  return parts.length ? parts.join('') : undefined;
+}
+
+function textFromBlocks(value: unknown, acceptedType: string): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const parts: string[] = [];
+  for (const block of value) {
+    if (!block || typeof block !== 'object') continue;
+    const record = block as Record<string, unknown>;
+    if (record.type === acceptedType && typeof record.text === 'string') parts.push(record.text);
+  }
+  return parts.length ? parts.join('') : undefined;
 }
 
 function parseJsonContent(content: string): unknown {

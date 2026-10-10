@@ -61,6 +61,7 @@ export class ClassificationService implements ClassifierPort {
     if (!hasProviderPermission) throw new PermissionRequiredError();
 
     const result = await this.provider.classify(input, folders, {
+      protocol: settings.protocol,
       baseUrl: normalizeBaseUrl(settings.baseUrl),
       model: settings.model,
       apiKey: settings.apiKey,
@@ -75,6 +76,7 @@ export class ClassificationService implements ClassifierPort {
   async testProvider(settings: Settings): Promise<void> {
     if (!settings.apiKey.trim()) throw new ProviderError('请先配置 API Key。', false);
     await this.provider.test({
+      protocol: settings.protocol,
       baseUrl: normalizeBaseUrl(settings.baseUrl),
       model: settings.model,
       apiKey: settings.apiKey,
@@ -86,7 +88,7 @@ function makeCacheKey(url: string, folders: FolderSummary[], settings: Settings)
   const folderFingerprint = stableFingerprint(
     folders.map((folder) => `${folder.id}:${folder.path}:${folder.folderType ?? ''}`).sort(),
   );
-  const provider = `${normalizeBaseUrl(settings.baseUrl)}:${settings.model}`;
+  const provider = `${settings.protocol}:${normalizeBaseUrl(settings.baseUrl)}:${settings.model}`;
   return `${normalizedUrl(url)}|${folderFingerprint}|${provider}`;
 }
 

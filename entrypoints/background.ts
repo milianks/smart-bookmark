@@ -7,10 +7,12 @@ import { ChromeBookmarkService } from '../services/bookmark.service';
 import { ClassificationService } from '../services/classifier.service';
 import { ChromeNotificationService } from '../services/notification.service';
 import { OrganizerService } from '../services/organizer.service';
+import { ProviderProtocolSchema } from '../types/domain';
 import type { RuntimeRequest } from '../types/messages';
 
 const SettingsPatchSchema = z.object({
   enabled: z.boolean().optional(),
+  protocol: ProviderProtocolSchema.optional(),
   baseUrl: z.string().min(1).max(2_000).optional(),
   model: z.string().trim().min(1).max(200).optional(),
   confidenceThreshold: z.number().min(0.5).max(1).optional(),

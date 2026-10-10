@@ -50,6 +50,31 @@ describe('ClassificationService', () => {
     expect(provider.classify).toHaveBeenCalledOnce();
   });
 
+  it('切换 API 协议后不会复用另一协议的分类缓存', async () => {
+    const provider = createProvider();
+    const service = new ClassificationService(provider, new MemoryStateRepository());
+    const input = { title: 'Unknown page', url: 'https://example.com/protocol-cache', domain: 'example.com', currentFolder: 'Bookmarks bar', currentFolderId: 'bar' };
+    const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key' };
+
+    const first = await service.classify(input, folders, settings, true);
+    const second = await service.classify(input, folders, { ...settings, protocol: 'openai-responses' }, true);
+
+    expect(first.source).toBe('ai');
+    expect(second.source).toBe('ai');
+    expect(provider.classify).toHaveBeenCalledTimes(2);
+  });
+
+  it('测试服务只调用合成 Provider 流程，不写分类缓存或活动记录', async () => {
+    const provider = createProvider();
+    const store = new MemoryStateRepository();
+    const service = new ClassificationService(provider, store);
+
+    await service.testProvider({ ...DEFAULT_SETTINGS, apiKey: 'test-key' });
+
+    expect(provider.test).toHaveBeenCalledOnce();
+    expect(await store.load()).toMatchObject({ cache: {}, activities: [], jobs: {}, reviews: {} });
+  });
+
   it('不允许没有 API Key 的纯本地自动分类', async () => {
     const provider = createProvider();
     const service = new ClassificationService(provider, new MemoryStateRepository());
