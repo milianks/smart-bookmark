@@ -27,3 +27,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 2: 多协议 AI Provider 配置与实测
+<!-- trellis-session: v=2 fp=5b27d64e3ad97b9d -->
+
+**Date**: 2026-10-10
+**Task**: 多协议 AI Provider 配置与实测
+**Branch**: `master`
+
+### Summary
+
+精简设置并支持 Anthropic Messages、OpenAI Chat Completions 与 OpenAI Responses。实测 aiaaa.cc/v1：Chat Completions 和 Responses 合成分类成功；Anthropic 路由使用标准 x-api-key 返回 401，Bearer 诊断返回 403。pnpm typecheck、57 项测试、build 和 diff-check 通过。测试凭据只保存在本地忽略的 .env，没有提交。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a7554ff` | feat: 精简设置并支持多协议 AI API |
+
+### Status
+
+[OK] **Completed**
