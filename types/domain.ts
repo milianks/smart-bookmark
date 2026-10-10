@@ -1,0 +1,196 @@
+import { z } from 'zod';
+
+const confidence = z.number().min(0).max(1);
+
+export const ClassificationResultSchema = z.discriminatedUnion('action', [
+  z.object({
+    action: z.literal('move'),
+    targetFolderId: z.string().min(1),
+    confidence,
+    reason: z.string().trim().min(1).max(500),
+  }).strict(),
+  z.object({
+    action: z.literal('suggest_folder'),
+    suggestedFolder: z.object({
+      name: z.string().trim().min(1).max(64),
+      parentId: z.string().min(1),
+    }).strict(),
+    confidence,
+    reason: z.string().trim().min(1).max(500),
+  }).strict(),
+  z.object({
+    action: z.literal('keep'),
+    confidence,
+    reason: z.string().trim().min(1).max(500),
+  }).strict(),
+]);
+
+export type ClassificationResult = z.infer<typeof ClassificationResultSchema>;
+export type ClassificationSource = 'cache' | 'rule' | 'ai';
+export type OrganizerMode = 'automatic' | 'confirm';
+
+export const SettingsSchema = z.object({
+  enabled: z.boolean(),
+  baseUrl: z.string().min(1),
+  model: z.string().min(1),
+  apiKey: z.string(),
+  confidenceThreshold: z.number().min(0.5).max(1),
+  mode: z.enum(['automatic', 'confirm']),
+  forceOrganize: z.boolean(),
+  notificationsEnabled: z.boolean(),
+  successNotifications: z.boolean(),
+}).strict();
+
+export type Settings = z.infer<typeof SettingsSchema>;
+export type PublicSettings = Omit<Settings, 'apiKey'> & { hasApiKey: boolean };
+
+export const DEFAULT_SETTINGS: Settings = {
+  enabled: true,
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-4o-mini',
+  apiKey: '',
+  confidenceThreshold: 0.85,
+  mode: 'automatic',
+  forceOrganize: false,
+  notificationsEnabled: true,
+  successNotifications: false,
+};
+
+export interface BookmarkSnapshot {
+  id: string;
+  title: string;
+  url: string;
+  parentId: string;
+  dateAdded?: number;
+}
+
+export interface FolderSummary {
+  id: string;
+  name: string;
+  path: string;
+  parentId?: string;
+  folderType?: string;
+  unmodifiable?: string;
+}
+
+export type JobStatus =
+  | 'queued'
+  | 'processing'
+  | 'awaiting_configuration'
+  | 'awaiting_permission'
+  | 'pending_review'
+  | 'completed'
+  | 'failed'
+  | 'skipped';
+
+export interface BookmarkJob {
+  bookmark: BookmarkSnapshot;
+  status: JobStatus;
+  attempts: number;
+  createdAt: number;
+  updatedAt: number;
+  nextAttemptAt?: number;
+  lastError?: string;
+  classification?: ClassificationResult;
+  classificationSource?: ClassificationSource;
+}
+
+export type ReviewStatus = 'pending' | 'approving' | 'approved' | 'rejected' | 'stale';
+
+export interface ReviewItem {
+  id: string;
+  bookmarkId: string;
+  title: string;
+  url: string;
+  sourceParentId: string;
+  classification: ClassificationResult;
+  source: ClassificationSource;
+  targetFolderPath?: string;
+  parentFolderPath?: string;
+  createdAt: number;
+  status: ReviewStatus;
+  targetFolderId?: string;
+}
+
+export type ActivityKind =
+  | 'received'
+  | 'moved'
+  | 'review_created'
+  | 'review_approved'
+  | 'review_rejected'
+  | 'kept'
+  | 'failed'
+  | 'skipped'
+  | 'undone';
+
+export interface ActivityRecord {
+  id: string;
+  kind: ActivityKind;
+  bookmarkId?: string;
+  title: string;
+  url?: string;
+  message: string;
+  at: number;
+  source?: ClassificationSource;
+  fromFolderId?: string;
+  toFolderId?: string;
+}
+
+export interface CacheEntry {
+  key: string;
+  result: ClassificationResult;
+  source: 'cache' | 'ai';
+  createdAt: number;
+}
+
+export interface UndoRecord {
+  bookmarkId: string;
+  title: string;
+  fromFolderId: string;
+  toFolderId: string;
+  movedAt: number;
+  operationId: string;
+}
+
+export interface PendingOperation extends UndoRecord {
+  state: 'prepared';
+  kind: 'automatic' | 'review' | 'undo';
+  reviewId?: string;
+}
+
+export interface PersistedState {
+  version: 1;
+  settings: Settings;
+  jobs: Record<string, BookmarkJob>;
+  reviews: Record<string, ReviewItem>;
+  cache: Record<string, CacheEntry>;
+  activities: ActivityRecord[];
+  lastUndo?: UndoRecord;
+  pendingOperation?: PendingOperation;
+  importStartedAt?: number;
+}
+
+export interface DashboardState {
+  settings: PublicSettings;
+  pendingReviews: ReviewItem[];
+  recentJobs: BookmarkJob[];
+  activities: ActivityRecord[];
+  awaitingConfigurationCount: number;
+  awaitingPermissionCount: number;
+  lastUndo?: UndoRecord;
+  aiStatus: 'configured' | 'missing-key' | 'permission-needed';
+}
+
+export interface ClassifiedResult {
+  result: ClassificationResult;
+  source: ClassificationSource;
+}
+
+export const emptyPersistedState = (): PersistedState => ({
+  version: 1,
+  settings: { ...DEFAULT_SETTINGS },
+  jobs: {},
+  reviews: {},
+  cache: {},
+  activities: [],
+});

@@ -1,0 +1,2 @@
+{"file":".trellis/tasks/10-09-ai-bookmark-manager/research/chrome-wxt-mv3-permissions.md","reason":"Verified Chrome bookmark/import event semantics, MV3 worker persistence, WXT background entrypoints, Chrome 134 folderType, and optional provider host permissions."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"The extension crosses background events, durable storage, provider contracts, runtime messages, and React pages; apply its boundary and data-flow checks."}

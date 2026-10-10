@@ -1,0 +1,2 @@
+{"file":".trellis/tasks/10-09-ai-bookmark-manager/research/chrome-wxt-mv3-permissions.md","reason":"Verify manifest permissions, event lifecycle, import suppression, runtime host access, and Chrome 134 folderType behavior against documented constraints."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Review typed contracts and state transitions across background, storage, services, and UI; catch cross-layer gaps in tests and behavior."}
