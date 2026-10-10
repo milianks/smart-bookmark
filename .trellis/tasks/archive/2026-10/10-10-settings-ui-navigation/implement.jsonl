@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "React component and native control conventions"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for page structure and pre-development checklist"}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "WXT extension page and navigation contract"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Required UI status, validation, and available checks"}
