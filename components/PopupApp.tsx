@@ -51,8 +51,18 @@ export function PopupApp() {
     }
   }
 
-  function openSettings() {
-    void chrome.runtime.openOptionsPage();
+  async function openSettings() {
+    try {
+      await chrome.windows.create({
+        url: chrome.runtime.getURL('/options.html'),
+        type: 'popup',
+        width: 640,
+        height: 760,
+        focused: true,
+      });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法打开设置窗口。');
+    }
   }
 
   if (!state) return <main className="w-[390px] p-5"><p className="text-sm text-slate-500">{error || '正在读取书签整理状态…'}</p></main>;
@@ -96,7 +106,7 @@ export function PopupApp() {
       <CardContent className="p-4 text-sm leading-6 text-amber-900 dark:text-amber-200">
         {state.awaitingConfigurationCount > 0 && <p>{state.awaitingConfigurationCount} 条新书签等待配置 API Key。</p>}
         {state.awaitingPermissionCount > 0 && <p>{state.awaitingPermissionCount} 条新书签等待 AI 地址权限。</p>}
-        <button type="button" className="mt-2 inline-flex font-semibold underline underline-offset-4" onClick={openSettings}>前往设置</button>
+        <button type="button" className="mt-2 inline-flex font-semibold underline underline-offset-4" onClick={() => void openSettings()}>前往设置</button>
       </CardContent>
     </Card>}
 
@@ -130,7 +140,7 @@ export function PopupApp() {
       {state.lastUndo
         ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void undo()}>撤销上次归档</Button>
         : <span className="text-xs text-slate-400">暂无可撤销操作</span>}
-      <button type="button" className="rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800" onClick={openSettings}>设置</button>
+      <button type="button" className="rounded-lg px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800" onClick={() => void openSettings()}>设置</button>
     </footer>
   </main>;
 }

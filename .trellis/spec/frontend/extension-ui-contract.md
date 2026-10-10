@@ -20,8 +20,8 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 
 ## Navigation between extension pages
 
-- Action popup controls that open the options page must call `chrome.runtime.openOptionsPage()` instead of navigating to `options.html` with a normal link. A normal link can render the options page inside the short-lived popup, which closes as soon as it loses focus.
-- When the options page is intended to be a durable configuration surface, set `wxt.openInTab` to `true` in its HTML entrypoint metadata so WXT emits `options_ui.open_in_tab: true`.
+- Action popup controls that open settings must create a durable independent window with `chrome.windows.create({ url: chrome.runtime.getURL('/options.html'), type: 'popup', width: 640, height: 760, focused: true })`. Do not navigate to `options.html` inside the short-lived action popup.
+- The options HTML entrypoint must not set `wxt.openInTab`; the settings surface is opened as a Chrome popup window rather than a browser tab.
 
 ## Quality checks
 
