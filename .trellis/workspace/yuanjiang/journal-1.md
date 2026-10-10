@@ -49,3 +49,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 3: 修复设置页宽度与导航
+<!-- trellis-session: v=2 fp=22402bfcd83c1505 -->
+
+**Date**: 2026-10-11
+**Task**: 修复设置页宽度与导航
+**Branch**: `master`
+
+### Summary
+
+设置入口改为打开独立选项标签页，避免弹窗失焦关闭；扩展设置页布局宽度；补充 WXT 页面导航规范并完成类型检查、57 项测试和构建验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a1d2233` | fix: 修复设置页入口与布局 |
+
+### Status
+
+[OK] **Completed**
