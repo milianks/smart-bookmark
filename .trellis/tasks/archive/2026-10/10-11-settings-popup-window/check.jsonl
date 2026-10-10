@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Verify frontend checks and scope discipline"}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "Verify popup window and options-page behavior"}
