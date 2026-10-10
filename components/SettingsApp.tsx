@@ -15,6 +15,7 @@ export function SettingsApp() {
   const [hasApiKey, setHasApiKey] = useState(false);
   const [apiKey, setApiKey] = useState('');
   const [state, setState] = useState<DashboardState | null>(null);
+  const [connectionTested, setConnectionTested] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -31,6 +32,7 @@ export function SettingsApp() {
   useEffect(() => { void refresh().catch((reason: unknown) => setError(messageOf(reason))); }, [refresh]);
 
   function change<K extends keyof FormSettings>(key: K, value: FormSettings[K]) {
+    if (key === 'protocol' || key === 'baseUrl' || key === 'model') setConnectionTested(false);
     setForm((current) => current ? { ...current, [key]: value } : current);
   }
 
@@ -54,6 +56,7 @@ export function SettingsApp() {
       return;
     }
     setBusy(true);
+    setConnectionTested(false);
     setError('');
     setMessage('正在请求 API 来源权限…');
     try {
@@ -65,8 +68,8 @@ export function SettingsApp() {
       setMessage('正在测试 AI 服务连接…');
       const response = await sendMessage({ type: 'provider:test' });
       unwrapResponse(response);
+      setConnectionTested(true);
       setMessage('连接成功，AI 分类服务已就绪。');
-      await refresh();
     } catch (reason) {
       setError(messageOf(reason));
       setMessage('');
@@ -76,17 +79,18 @@ export function SettingsApp() {
   }
 
   async function toggleEnabled() {
-    if (!form) return;
-    change('enabled', !form.enabled);
+    if (!form || busy) return;
+    const previousEnabled = form.enabled;
+    const enabled = !previousEnabled;
+    change('enabled', enabled);
     setBusy(true);
     try {
-      const response = await sendMessage({ type: 'settings:update', settings: { enabled: !form.enabled } });
+      const response = await sendMessage({ type: 'settings:update', settings: { enabled } });
       unwrapResponse(response);
-      await refresh();
-      setMessage(!form.enabled ? '自动整理已开启。' : '自动整理已关闭，新书签将保留原位。');
+      setMessage(enabled ? '自动整理已开启。' : '自动整理已关闭，新书签将保留原位。');
     } catch (reason) {
       setError(messageOf(reason));
-      await refresh();
+      setForm((current) => current ? { ...current, enabled: previousEnabled } : current);
     } finally {
       setBusy(false);
     }
@@ -94,11 +98,11 @@ export function SettingsApp() {
 
   if (!form) return <main className="mx-auto max-w-3xl p-6"><p>{error || '正在加载设置…'}</p></main>;
 
-  return <main className="mx-auto max-w-3xl space-y-4 px-5 py-7 sm:px-8">
+  return <main className="mx-auto w-full max-w-5xl space-y-4 px-5 py-7 sm:px-8 lg:px-10">
     <header className="flex flex-wrap items-start justify-between gap-4">
       <div><a href={chrome.runtime.getURL('/popup.html')} className="text-xs font-medium text-violet-700 dark:text-violet-300">← 返回书签管理</a><h1 className="mt-3 text-2xl font-semibold tracking-tight">设置</h1><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">配置 AI 服务和书签整理方式。</p></div>
-      <Badge className={state?.aiStatus === 'configured' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'}>
-        {state?.aiStatus === 'configured' ? '配置完成，尚未验证连接' : state?.aiStatus === 'permission-needed' ? '等待 API 来源授权' : '必须配置 API Key'}
+      <Badge className={connectionTested || state?.aiStatus === 'configured' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'}>
+        {connectionTested ? '连接测试通过' : state?.aiStatus === 'configured' ? '配置完成，尚未验证连接' : state?.aiStatus === 'permission-needed' ? '等待 API 来源授权' : '必须配置 API Key'}
       </Badge>
     </header>
 
@@ -109,21 +113,21 @@ export function SettingsApp() {
       <CardHeader><h2 className="font-semibold">AI 服务</h2><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">选择 API 协议，并填写基础地址、模型和密钥。</p></CardHeader>
       <CardContent className="grid gap-4">
         <Field label="API 协议">
-          <select value={form.protocol} onChange={(event) => change('protocol', event.target.value as ProviderProtocol)} className="min-h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
+          <select value={form.protocol} disabled={busy} onChange={(event) => change('protocol', event.target.value as ProviderProtocol)} className="min-h-10 rounded-xl border border-slate-200 bg-white px-3 text-sm dark:border-slate-700 dark:bg-slate-950">
             <option value="anthropic-messages">Anthropic Messages</option>
             <option value="openai-chat-completions">OpenAI 兼容（Chat Completions）</option>
             <option value="openai-responses">OpenAI Responses API</option>
           </select>
         </Field>
         <Field label="基础 API 地址" hint="填写服务基础地址，例如 https://api.openai.com/v1；不要填写 /messages、/chat/completions 或 /responses。只会申请该来源的可选权限。">
-          <Input value={form.baseUrl} onChange={(event) => change('baseUrl', event.target.value)} placeholder="https://api.openai.com/v1" autoComplete="url" />
+          <Input value={form.baseUrl} disabled={busy} onChange={(event) => change('baseUrl', event.target.value)} placeholder="https://api.openai.com/v1" autoComplete="url" />
         </Field>
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="模型名称">
-            <Input value={form.model} onChange={(event) => change('model', event.target.value)} placeholder="模型名称" />
+            <Input value={form.model} disabled={busy} onChange={(event) => change('model', event.target.value)} placeholder="模型名称" />
           </Field>
           <Field label={hasApiKey ? '替换 API Key（留空保持当前密钥）' : 'API Key'} hint={hasApiKey ? '已保存的密钥不会回填到页面。' : '未配置密钥时，新书签会保留原位。'}>
-            <Input type="password" value={apiKey} onChange={(event) => setApiKey(event.target.value)} placeholder={hasApiKey ? '输入新密钥以替换' : '粘贴 API Key'} autoComplete="new-password" />
+            <Input type="password" value={apiKey} disabled={busy} onChange={(event) => { setApiKey(event.target.value); setConnectionTested(false); }} placeholder={hasApiKey ? '输入新密钥以替换' : '粘贴 API Key'} autoComplete="new-password" />
           </Field>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -138,7 +142,7 @@ export function SettingsApp() {
       <CardContent className="space-y-4">
         <label className="flex items-center justify-between gap-4">
           <span><span className="block text-sm font-medium">自动整理</span><span className="mt-1 block text-xs text-slate-500">关闭后新收藏会保留原位。</span></span>
-          <input type="checkbox" checked={form.enabled} onChange={() => void toggleEnabled()} className="size-4 accent-violet-600" />
+          <input type="checkbox" checked={form.enabled} disabled={busy} onChange={() => void toggleEnabled()} className="size-4 accent-violet-600" />
         </label>
         <details className="border-t border-slate-100 pt-3 dark:border-slate-800">
           <summary className="cursor-pointer text-sm font-medium">整理偏好</summary>

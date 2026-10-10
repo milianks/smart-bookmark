@@ -18,6 +18,11 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 - Follow system color preference. Keep user/model-provided title, URL, reason, and folder labels as React text nodes; do not render them as HTML.
 - Use Chinese user-facing labels and `role="status"` / `role="alert"` for asynchronous results and errors.
 
+## Navigation between extension pages
+
+- Action popup controls that open the options page must call `chrome.runtime.openOptionsPage()` instead of navigating to `options.html` with a normal link. A normal link can render the options page inside the short-lived popup, which closes as soon as it loses focus.
+- When the options page is intended to be a durable configuration surface, set `wxt.openInTab` to `true` in its HTML entrypoint metadata so WXT emits `options_ui.open_in_tab: true`.
+
 ## Quality checks
 
 - Keep page entrypoints thin: mount the corresponding exported component and shared stylesheet.
