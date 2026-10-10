@@ -71,3 +71,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 4: 将设置页改为独立小窗口
+<!-- trellis-session: v=2 fp=fd8cb2699f6cbd56 -->
+
+**Date**: 2026-10-11
+**Task**: 将设置页改为独立小窗口
+**Branch**: `master`
+
+### Summary
+
+设置入口改为创建 640x760 的独立 Chrome popup 窗口，移除 options 标签页模式，加入 windows 权限；完成类型检查、57 项测试和构建验证。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `123b4a1` | fix: 将设置页改为独立小窗口 |
+
+### Status
+
+[OK] **Completed**

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
+- **Total Sessions**: 4
 - **Last Active**: 2026-10-11
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~73 | Active |
+| `journal-1.md` | ~95 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 4 | 2026-10-11 | 将设置页改为独立小窗口 | `123b4a1` | `master` |
 | 3 | 2026-10-11 | 修复设置页宽度与导航 | `a1d2233` | `master` |
 | 2 | 2026-10-10 | 多协议 AI Provider 配置与实测 | `a7554ff` | `master` |
 | 1 | 2026-10-10 | 初始化 AI Bookmark Manager P0 | `23c0e96` | `master` |
