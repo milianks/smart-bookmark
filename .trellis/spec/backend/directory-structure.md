@@ -6,49 +6,44 @@
 
 ## Overview
 
-<!--
-Document your project's backend directory structure here.
-
-Questions to answer:
-- How are modules/packages organized?
-- Where does business logic live?
-- Where are API endpoints defined?
-- How are utilities and helpers organized?
--->
-
-(To be filled by the team)
-
----
+The backend is the Chrome Manifest V3 extension service worker, not a web server. `entrypoints/background.ts` wires Chrome events and runtime messages to services. Business orchestration, Chrome API adapters, AI integration, and local persistence live in separate modules below the repository root.
 
 ## Directory Layout
 
-```
-<!-- Replace with your actual structure -->
-src/
-├── ...
-└── ...
+```text
+entrypoints/
+└── background.ts             # MV3 event listeners and message dispatch
+services/
+├── bookmark.service.ts        # Chrome Bookmarks API adapter and port
+├── classifier.service.ts      # local rules/cache and provider orchestration
+├── organizer.service.ts       # durable jobs, reviews, and bookmark workflow
+└── notification.service.ts    # Chrome notifications adapter
+lib/
+├── ai/                        # provider, prompts, rules, and URL config
+├── storage/repository.ts      # chrome.storage.local repository
+└── utils/ids.ts               # stable IDs and URL fingerprints
+types/
+├── domain.ts                  # domain schemas and persisted-state types
+└── messages.ts                # page/background message contract
+tests/                         # Vitest unit tests and test doubles
 ```
 
----
+The React extension pages are under `components/` and `entrypoints/{popup,options,review}/`; those are covered by the frontend guides.
 
 ## Module Organization
 
-<!-- How should new features/modules be organized? -->
-
-(To be filled by the team)
-
----
+- Keep Chrome listener registration and request dispatch in `entrypoints/background.ts`. It constructs adapters and services; it should not become the home for classification or bookmark workflow rules.
+- Put orchestration in the existing services. For example, `OrganizerService` coordinates persisted jobs and reviews, while `ClassificationService` owns cache/rule/provider selection.
+- Keep Chrome API access behind the existing service or repository adapter (`ChromeBookmarkService`, `ChromeNotificationService`, `ChromeStateRepository`). The organizer receives ports so its tests can use fakes.
+- Put provider-specific HTTP and response parsing in `lib/ai/`; keep shared domain and runtime message shapes in `types/`.
+- This project has no server routes, controllers, SQL layer, or ORM. Do not introduce those as if they were established layers.
 
 ## Naming Conventions
 
-<!-- File and folder naming rules -->
-
-(To be filled by the team)
-
----
+Existing service files use lower-case domain names with `.service.ts` (for example, `services/bookmark.service.ts`). AI and utility modules use lower-case kebab-case names, while shared type modules use lower-case names such as `types/domain.ts`. Exported classes use PascalCase (`OrganizerService`, `ChromeStateRepository`); functions and values use camelCase.
 
 ## Examples
 
-<!-- Link to well-organized modules as examples -->
-
-(To be filled by the team)
+- `entrypoints/background.ts` registers `chrome.bookmarks.onCreated` synchronously and delegates to `organizer.onBookmarkCreated`.
+- `services/organizer.service.ts` owns the queued/review/move workflow and depends on `BookmarkPort` and `StateRepository`.
+- `services/bookmark.service.ts` adapts Chrome bookmark operations to `BookmarkPort`; `lib/storage/repository.ts` adapts `chrome.storage.local` to `StateRepository`.

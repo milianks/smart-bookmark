@@ -21,10 +21,10 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 
 ### 3. Contracts
 
-- Runtime requests are a discriminated union: `state:get`, `settings:update`, `provider:test`, `review:approve`, `review:reject`, `undo:last`. Validate incoming messages with Zod before dispatch.
+- Runtime requests are a discriminated union: `state:get`, `settings:update`, `settings-draft:get`, `settings-draft:set`, `settings-draft:clear`, `provider:test`, `review:approve`, `review:reject`, and `undo:last`. Validate incoming messages with Zod before dispatch; settings drafts are persisted locally through the same repository.
 - Classification input contains one new bookmark's title, URL, domain, current folder ID/path, and folder `{id, name, path}` summaries. Never send the full bookmark tree or page content to the provider.
 - Classification output is strict Zod data: `move` requires `targetFolderId`; `suggest_folder` requires a name and `parentId`; `keep` has no destination; confidence is in `[0,1]`.
-- Persist jobs, review items, settings, cache, activity history, import marker, undo record, and pending mutation intent through `chrome.storage.local`. Keep API keys out of sync storage, logs, errors, and notifications.
+- Persist jobs, review items, settings and settings drafts, cache, activity history, import marker, undo record, and pending mutation intent through `chrome.storage.local`. Keep API keys out of sync storage, logs, errors, and notifications.
 - Register Chrome listeners synchronously at background module initialization. Persist a job before classification; use bookmark ID as its idempotency key. Use alarms for finite retry and worker restart recovery.
 - During `resume()`, query permission for the currently configured provider origin. Promote `awaiting_permission` jobs only when an API key exists and that exact origin is granted; clear the stale permission error before requeueing.
 - Persist a pending move intent before calling `chrome.bookmarks.move`; re-read the bookmark and validate its source and destination immediately before mutation. Never delete a bookmark or folder.

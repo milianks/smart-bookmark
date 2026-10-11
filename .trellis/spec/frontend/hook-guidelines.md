@@ -6,46 +6,31 @@
 
 ## Overview
 
-<!--
-Document your project's hook conventions here.
-
-Questions to answer:
-- What custom hooks do you have?
-- How do you handle data fetching?
-- What are the naming conventions?
-- How do you share stateful logic?
--->
-
-(To be filled by the team)
-
----
+The application currently uses React built-in hooks only. There are no custom hooks or shared data-fetching hooks in the repository. Page-specific state and effects live in the page components.
 
 ## Custom Hook Patterns
 
-<!-- How to create and structure custom hooks -->
-
-(To be filled by the team)
-
----
+No custom hook pattern, naming example, or hooks directory is established. Existing examples keep `useState`, `useEffect`, `useCallback`, and `useMemo` in `SettingsApp`, `PopupApp`, and `ReviewApp`. Do not assume a project-specific custom-hook location or convention.
 
 ## Data Fetching
 
-<!-- How data fetching is handled (React Query, SWR, etc.) -->
+There is no React Query, SWR, or custom fetch abstraction. Components call `sendMessage()` from `types/messages.ts` to request background state or actions. `useEffect` loads initial state, and pages refresh after successful mutations. Convert rejected or `{ ok: false }` responses to visible status text; do not access the local repository from the UI.
 
-(To be filled by the team)
+Example from `components/ReviewApp.tsx`:
 
----
+```tsx
+const refresh = useCallback(async () => {
+  const response = await sendMessage({ type: 'state:get' });
+  setState(unwrapResponse<DashboardState>(response));
+}, []);
+```
 
 ## Naming Conventions
 
-<!-- Hook naming rules (use*, etc.) -->
-
-(To be filled by the team)
-
----
+React built-in hooks retain their standard names (`useState`, `useEffect`, etc.). There are no project custom-hook filenames or naming examples beyond this.
 
 ## Common Mistakes
 
-<!-- Hook-related mistakes your team has made -->
-
-(To be filled by the team)
+- Do not call hooks conditionally or from event handlers; current components call built-in hooks at the top level.
+- Do not assume a query cache exists. Refresh the relevant page state after a background mutation as current pages do.
+- Do not put bookmark mutation or persistent-state ownership into a hook; those operations belong to the background service worker.

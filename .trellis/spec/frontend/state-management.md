@@ -6,46 +6,29 @@
 
 ## Overview
 
-<!--
-Document your project's state management conventions here.
-
-Questions to answer:
-- What state management solution do you use?
-- How is local vs global state decided?
-- How do you handle server state?
-- What are the patterns for derived state?
--->
-
-(To be filled by the team)
-
----
+There is no global React store, context-based state layer, router state library, or server-state cache such as React Query. React components keep only transient page state. Durable settings, jobs, review items, cache, and activity history belong to the background and are stored through `chrome.storage.local`.
 
 ## State Categories
 
-<!-- Local state, global state, server state, URL state -->
-
-(To be filled by the team)
-
----
+- **Transient UI state:** local `useState` values for the loaded dashboard snapshot, form values, busy flags, selected review, and status/error text. See `components/SettingsApp.tsx` and `components/ReviewApp.tsx`.
+- **Extension application state:** the `PersistedState` model in `types/domain.ts`, loaded and updated by the background through `StateRepository` in `lib/storage/repository.ts`.
+- **URL state:** `ReviewApp` reads the optional `item` query parameter once on mount to select a review. There is no general URL-state system.
+- **Server state:** none; the extension does not use a project backend server.
 
 ## When to Use Global State
 
-<!-- Criteria for promoting state to global -->
-
-(To be filled by the team)
-
----
+No global state mechanism is present. Do not add a global store just to share dashboard data between pages; each extension page requests its current `DashboardState` from the background with `{ type: 'state:get' }`. Keep ephemeral state in the component that owns the interaction.
 
 ## Server State
 
-<!-- How server data is cached and synchronized -->
+There is no server-state cache or synchronization library. Treat background-owned extension state as the source of truth: load it with `sendMessage()`, unwrap the typed runtime response, and refresh after a mutation. Do not access `chrome.storage.local` from a component or keep a second, independently mutable copy of persistent settings in the UI.
 
-(To be filled by the team)
-
----
+The dashboard intentionally exposes `PublicSettings` with `hasApiKey`, not the key itself. The options page sends a replacement key through `settings:update`; the field remains a password input and does not receive a saved key back.
 
 ## Common Mistakes
 
-<!-- State management mistakes your team has made -->
-
-(To be filled by the team)
+- Do not add React Query/SWR terminology or cache invalidation patterns; those libraries are not dependencies.
+- Do not treat the component's dashboard snapshot as durable state. A background action can change it, so refresh from `state:get` after a mutation.
+- Do not promote transient busy/error/selection state into persistent storage.
+- Do not read or write Chrome storage or bookmarks from the page; the background worker owns these operations.
+- Do not include API key material in dashboard state, status text, notifications, or activity history.

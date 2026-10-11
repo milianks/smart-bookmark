@@ -20,8 +20,8 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 
 ## Navigation between extension pages
 
-- Action popup controls that open settings must create a durable independent window with `chrome.windows.create({ url: chrome.runtime.getURL('/options.html'), type: 'popup', width: 640, height: 760, focused: true })`. Do not navigate to `options.html` inside the short-lived action popup.
-- The options HTML entrypoint must not set `wxt.openInTab`; the settings surface is opened as a Chrome popup window rather than a browser tab.
+- Settings are the second view inside the action popup. Switch views in React without opening a tab or Chrome window.
+- Persist editable settings drafts through typed background runtime messages; never read or write extension storage from UI components. Clear the draft after formal settings save succeeds.
 
 ## Quality checks
 
