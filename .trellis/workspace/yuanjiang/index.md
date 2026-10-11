@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 4
+- **Total Sessions**: 5
 - **Last Active**: 2026-10-11
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~95 | Active |
+| `journal-1.md` | ~125 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 5 | 2026-10-11 | 添加仓库贡献者指南 | `a086e34` | `master` |
 | 4 | 2026-10-11 | 将设置页改为独立小窗口 | `123b4a1` | `master` |
 | 3 | 2026-10-11 | 修复设置页宽度与导航 | `a1d2233` | `master` |
 | 2 | 2026-10-10 | 多协议 AI Provider 配置与实测 | `a7554ff` | `master` |

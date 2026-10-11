@@ -93,3 +93,33 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 5: 添加仓库贡献者指南
+<!-- trellis-session: v=2 fp=5447df73e2df2fcb -->
+
+**Date**: 2026-10-11
+**Task**: 添加仓库贡献者指南
+**Branch**: `master`
+
+### Summary
+
+在根目录 AGENTS.md 添加简洁的英文贡献者指南，并保留原 Trellis 管理区块。
+
+### Main Changes
+
+- 新增项目结构、开发命令、代码风格、测试及提交/PR 指引。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a086e34` | docs: add repository contributor guide |
+
+### Testing
+
+- [OK] 正文 308 词；Trellis 管理区块与 HEAD 一致；git diff --check 通过。仅文档变更，未运行代码测试。
+
+### Status
+
+[OK] **Completed**
