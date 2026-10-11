@@ -123,3 +123,33 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 6: 完善项目开发规范
+<!-- trellis-session: v=2 fp=dd4eb0c18243230e -->
+
+**Date**: 2026-10-11
+**Task**: 完善项目开发规范
+**Branch**: `master`
+
+### Summary
+
+补齐 backend/frontend 的项目开发规范，记录实际目录、组件、状态、类型、错误处理、持久化和质量检查约定，并完成 Bootstrap Guidelines 任务归档。
+
+### Main Changes
+
+- 完善 15 个规格文档；补充 settings-draft 消息、本地持久化及 PersistedState 字段说明。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d58835b` | docs: populate project development guidelines |
+
+### Testing
+
+- [OK] 索引链接、占位符扫描及 git diff --check 通过；仅文档变更，未运行代码测试、类型检查或构建。
+
+### Status
+
+[OK] **Completed**
