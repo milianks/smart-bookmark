@@ -14,6 +14,7 @@ import type {
   PersistedState,
   ReviewItem,
   Settings,
+  SettingsDraft,
   UndoRecord,
 } from '../types/domain';
 import { DEFAULT_SETTINGS } from '../types/domain';
@@ -217,6 +218,21 @@ export class OrganizerService {
       }
     });
     if (patch.enabled !== false) await this.onSettingsUpdated();
+  }
+
+  async getSettingsDraft(): Promise<SettingsDraft | null> {
+    const state = await this.deps.store.load();
+    return state.settingsDraft ? structuredClone(state.settingsDraft) : null;
+  }
+
+  async updateSettingsDraft(draft: SettingsDraft): Promise<void> {
+    await this.deps.store.update((state) => {
+      state.settingsDraft = { ...(state.settingsDraft ?? {}), ...draft };
+    });
+  }
+
+  async clearSettingsDraft(): Promise<void> {
+    await this.deps.store.update((state) => { delete state.settingsDraft; });
   }
 
   async testProvider(): Promise<void> {

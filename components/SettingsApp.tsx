@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
-import type { DashboardState, ProviderProtocol, PublicSettings } from '../types/domain';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { DashboardState, ProviderProtocol, PublicSettings, SettingsDraft } from '../types/domain';
 import { sendMessage, unwrapResponse } from '../types/messages';
 import { normalizeBaseUrl, originPermissionPattern } from '../lib/ai/provider-config';
 import { RecentActivity } from './RecentActivity';
@@ -10,7 +10,12 @@ import { Field, Input } from './ui/field';
 
 type FormSettings = Omit<PublicSettings, 'hasApiKey'>;
 
-export function SettingsApp() {
+interface SettingsAppProps {
+  embedded?: boolean;
+  onBack?: () => void;
+}
+
+export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
   const [form, setForm] = useState<FormSettings | null>(null);
   const [hasApiKey, setHasApiKey] = useState(false);
   const [apiKey, setApiKey] = useState('');
@@ -19,21 +24,44 @@ export function SettingsApp() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [draftReady, setDraftReady] = useState(false);
+  const draftWrite = useRef(Promise.resolve());
 
   const refresh = useCallback(async () => {
     const response = await sendMessage({ type: 'state:get' });
     const dashboard = unwrapResponse<DashboardState>(response);
     const { hasApiKey: configured, ...settings } = dashboard.settings;
-    setForm(settings);
+    const draftResponse = await sendMessage({ type: 'settings-draft:get' });
+    const draft = unwrapResponse<{ draft: SettingsDraft | null }>(draftResponse).draft;
+    const { apiKey: draftApiKey, ...draftSettings } = draft ?? {};
+    setForm({ ...settings, ...draftSettings });
+    if (draftApiKey !== undefined) setApiKey(draftApiKey);
     setHasApiKey(configured);
     setState(dashboard);
+    setDraftReady(true);
   }, []);
 
   useEffect(() => { void refresh().catch((reason: unknown) => setError(messageOf(reason))); }, [refresh]);
 
   function change<K extends keyof FormSettings>(key: K, value: FormSettings[K]) {
     if (key === 'protocol' || key === 'baseUrl' || key === 'model') setConnectionTested(false);
-    setForm((current) => current ? { ...current, [key]: value } : current);
+    setForm((current) => {
+      const next = current ? { ...current, [key]: value } : current;
+      if (next && draftReady) void persistDraft(next, apiKey);
+      return next;
+    });
+  }
+
+  async function persistDraft(nextForm: FormSettings, nextApiKey: string): Promise<void> {
+    const draft: SettingsDraft = { ...nextForm, apiKey: nextApiKey };
+    try {
+      draftWrite.current = draftWrite.current.catch(() => undefined).then(async () => {
+        unwrapResponse(await sendMessage({ type: 'settings-draft:set', draft }));
+      });
+      await draftWrite.current;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '设置草稿保存失败，仍可继续编辑。');
+    }
   }
 
   async function save(announce = true): Promise<void> {
@@ -41,8 +69,10 @@ export function SettingsApp() {
     const baseUrl = normalizeBaseUrl(form.baseUrl);
     if (!hasApiKey && !apiKey.trim()) throw new Error('启用自动整理前必须配置 API Key。');
     const settings = { ...form, baseUrl, ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}) };
+    await draftWrite.current;
     const response = await sendMessage({ type: 'settings:update', settings });
     unwrapResponse(response);
+    unwrapResponse(await sendMessage({ type: 'settings-draft:clear' }));
     setApiKey('');
     await refresh();
     if (announce) setMessage('设置已保存到此浏览器。');
@@ -96,11 +126,11 @@ export function SettingsApp() {
     }
   }
 
-  if (!form) return <main className="mx-auto max-w-3xl p-6"><p>{error || '正在加载设置…'}</p></main>;
+  if (!form) return <main className={embedded ? 'w-[390px] p-4' : 'mx-auto max-w-3xl p-6'}><p>{error || '正在加载设置…'}</p></main>;
 
-  return <main className="mx-auto w-full max-w-5xl space-y-4 px-5 py-7 sm:px-8 lg:px-10">
+  return <main className={embedded ? 'w-[390px] space-y-3 p-4' : 'mx-auto w-full max-w-5xl space-y-4 px-5 py-7 sm:px-8 lg:px-10'}>
     <header className="flex flex-wrap items-start justify-between gap-4">
-      <div><a href={chrome.runtime.getURL('/popup.html')} className="text-xs font-medium text-violet-700 dark:text-violet-300">← 返回书签管理</a><h1 className="mt-3 text-2xl font-semibold tracking-tight">设置</h1><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">配置 AI 服务和书签整理方式。</p></div>
+      <div>{embedded ? <button type="button" onClick={onBack} className="text-xs font-medium text-violet-700 dark:text-violet-300">← 返回书签管理</button> : <a href={chrome.runtime.getURL('/popup.html')} className="text-xs font-medium text-violet-700 dark:text-violet-300">← 返回书签管理</a>}<h1 className="mt-3 text-xl font-semibold tracking-tight">设置</h1><p className="mt-1 text-xs text-slate-500 dark:text-slate-400">配置 AI 服务和书签整理方式。</p></div>
       <Badge className={connectionTested || state?.aiStatus === 'configured' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300' : 'bg-amber-100 text-amber-800 dark:bg-amber-950 dark:text-amber-300'}>
         {connectionTested ? '连接测试通过' : state?.aiStatus === 'configured' ? '配置完成，尚未验证连接' : state?.aiStatus === 'permission-needed' ? '等待 API 来源授权' : '必须配置 API Key'}
       </Badge>
@@ -127,7 +157,7 @@ export function SettingsApp() {
             <Input value={form.model} disabled={busy} onChange={(event) => change('model', event.target.value)} placeholder="模型名称" />
           </Field>
           <Field label={hasApiKey ? '替换 API Key（留空保持当前密钥）' : 'API Key'} hint={hasApiKey ? '已保存的密钥不会回填到页面。' : '未配置密钥时，新书签会保留原位。'}>
-            <Input type="password" value={apiKey} disabled={busy} onChange={(event) => { setApiKey(event.target.value); setConnectionTested(false); }} placeholder={hasApiKey ? '输入新密钥以替换' : '粘贴 API Key'} autoComplete="new-password" />
+            <Input type="password" value={apiKey} disabled={busy} onChange={(event) => { const value = event.target.value; setApiKey(value); setConnectionTested(false); if (form && draftReady) void persistDraft(form, value); }} placeholder={hasApiKey ? '输入新密钥以替换' : '粘贴 API Key'} autoComplete="new-password" />
           </Field>
         </div>
         <div className="flex flex-wrap gap-2">

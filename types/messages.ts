@@ -1,9 +1,12 @@
-import type { DashboardState, Settings } from './domain';
+import type { DashboardState, Settings, SettingsDraft } from './domain';
 
 export type RuntimeRequest =
   | { type: 'state:get' }
   | { type: 'settings:update'; settings: Partial<Settings> }
   | { type: 'provider:test' }
+  | { type: 'settings-draft:get' }
+  | { type: 'settings-draft:set'; draft: SettingsDraft }
+  | { type: 'settings-draft:clear' }
   | { type: 'review:approve'; id: string }
   | { type: 'review:reject'; id: string }
   | { type: 'undo:last' };
@@ -12,6 +15,7 @@ export type RuntimeData =
   | DashboardState
   | { saved: true }
   | { connected: true; model: string }
+  | { draft: SettingsDraft | null }
   | { approved: true }
   | { rejected: true }
   | { undone: true; title: string };

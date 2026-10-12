@@ -1,6 +1,7 @@
 import {
   DEFAULT_SETTINGS,
   SettingsSchema,
+  SettingsDraftSchema,
   emptyPersistedState,
   type PersistedState,
 } from '../../types/domain';
@@ -59,6 +60,9 @@ function normalizeState(input: Partial<PersistedState>): PersistedState {
     reviews: input.reviews && typeof input.reviews === 'object' ? input.reviews : {},
     cache: input.cache && typeof input.cache === 'object' ? input.cache : {},
     activities: Array.isArray(input.activities) ? input.activities.slice(-100) : [],
+    ...(SettingsDraftSchema.safeParse(input.settingsDraft).success
+      ? { settingsDraft: SettingsDraftSchema.parse(input.settingsDraft) }
+      : {}),
   };
 }
 

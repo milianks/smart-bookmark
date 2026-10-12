@@ -21,6 +21,7 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 ## Navigation between extension pages
 
 - Settings are the second view inside the action popup. Switch views in React without opening a tab or Chrome window.
+- Chrome MV3 derives popup width from its rendered content: keep the popup main view and embedded settings view at the same fixed `390px` width in both loading and loaded states. Keep the options page's responsive `max-w-5xl` layout separate; do not set a global `html` or `body` width to size one popup view.
 - Persist editable settings drafts through typed background runtime messages; never read or write extension storage from UI components. Clear the draft after formal settings save succeeds.
 
 ## Quality checks

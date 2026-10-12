@@ -46,6 +46,8 @@ export const SettingsSchema = z.object({
 
 export type Settings = z.infer<typeof SettingsSchema>;
 export type PublicSettings = Omit<Settings, 'apiKey'> & { hasApiKey: boolean };
+export const SettingsDraftSchema = SettingsSchema.partial().strict();
+export type SettingsDraft = z.infer<typeof SettingsDraftSchema>;
 
 export const DEFAULT_SETTINGS: Settings = {
   enabled: true,
@@ -172,6 +174,7 @@ export interface PersistedState {
   lastUndo?: UndoRecord;
   pendingOperation?: PendingOperation;
   importStartedAt?: number;
+  settingsDraft?: SettingsDraft;
 }
 
 export interface DashboardState {

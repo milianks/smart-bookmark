@@ -7,7 +7,7 @@ import { ChromeBookmarkService } from '../services/bookmark.service';
 import { ClassificationService } from '../services/classifier.service';
 import { ChromeNotificationService } from '../services/notification.service';
 import { OrganizerService } from '../services/organizer.service';
-import { ProviderProtocolSchema } from '../types/domain';
+import { ProviderProtocolSchema, SettingsDraftSchema } from '../types/domain';
 import type { RuntimeRequest } from '../types/messages';
 
 const SettingsPatchSchema = z.object({
@@ -27,6 +27,9 @@ const RequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('state:get') }).strict(),
   z.object({ type: z.literal('settings:update'), settings: SettingsPatchSchema }).strict(),
   z.object({ type: z.literal('provider:test') }).strict(),
+  z.object({ type: z.literal('settings-draft:get') }).strict(),
+  z.object({ type: z.literal('settings-draft:set'), draft: SettingsDraftSchema }).strict(),
+  z.object({ type: z.literal('settings-draft:clear') }).strict(),
   z.object({ type: z.literal('review:approve'), id: z.string().min(1) }).strict(),
   z.object({ type: z.literal('review:reject'), id: z.string().min(1) }).strict(),
   z.object({ type: z.literal('undo:last') }).strict(),
@@ -84,8 +87,6 @@ export default defineBackground(() => {
     if (notificationId.startsWith('review:')) {
       const id = encodeURIComponent(notificationId.slice('review:'.length));
       void chrome.tabs.create({ url: chrome.runtime.getURL(`/review.html?item=${id}`) });
-    } else if (notificationId.startsWith('failure:')) {
-      void chrome.runtime.openOptionsPage();
     }
   });
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -118,6 +119,14 @@ async function handleRequest(request: RuntimeRequest, organizer: OrganizerServic
     case 'provider:test':
       await organizer.testProvider();
       return { connected: true, model: (await organizer.getDashboardState()).settings.model };
+    case 'settings-draft:get':
+      return { draft: await organizer.getSettingsDraft() };
+    case 'settings-draft:set':
+      await organizer.updateSettingsDraft(request.draft);
+      return { saved: true };
+    case 'settings-draft:clear':
+      await organizer.clearSettingsDraft();
+      return { saved: true };
     case 'review:approve':
       await organizer.approveReview(request.id);
       return { approved: true };
