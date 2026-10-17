@@ -197,3 +197,23 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 9: 完成 Bookmark 架构梳理与重构规划
+<!-- trellis-session: v=2 fp=0e15737653028949 -->
+
+**Date**: 2026-10-17
+**Task**: 完成 Bookmark 架构梳理与重构规划
+**Branch**: `master`
+
+### Summary
+
+完成 10-17-arch-plan：基于现行 P1 代码梳理 Organizer god class、单 blob 存储、background 消息路由和次要问题；输出目标模块、四批重构路线、依赖边界、验证命令和回滚点。仅修改 Trellis 规划文档，未改产品代码。
+
+### Git Commits
+
+(No commits - planning session)
+
+### Status
+
+[OK] **Completed**
