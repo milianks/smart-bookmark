@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Preserve pending move intents, review state, undo records, and recovery ordering."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Keep activity and job state changes within StateRepository updates."}
+{"file": ".trellis/spec/backend/logging-guidelines.md", "reason": "Preserve bounded activity history and existing diagnostic message behavior."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Keep pure helpers free of Chrome and provider dependencies; preserve tests."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Centralize repeated activity-state transformations without introducing broad abstractions."}

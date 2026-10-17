@@ -1,0 +1,30 @@
+{
+  "id": "extract-activity-log",
+  "name": "extract-activity-log",
+  "title": "抽取活动日志并瘦身 Organizer",
+  "description": "抽取活动日志纯状态变换并整理 Organizer 审批管道，保持行为和现有测试断言。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "yuanjiang",
+  "assignee": "yuanjiang",
+  "createdAt": "2026-10-17",
+  "completedAt": "2026-10-17",
+  "branch": "refactor/bookmark-architecture",
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-17-bookmark-architecture-refactor",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "codeCommit": "c640aac",
+    "rollbackPoint": "c640aac",
+    "verification": "pnpm typecheck passed; pnpm test --run: 78 passed; pnpm build passed; git diff --check passed; Chromium runtime smoke: review approval moved bookmark, marked review approved, cleared pending intent, and appended review_approved activity"
+  }
+}
