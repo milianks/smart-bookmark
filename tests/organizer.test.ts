@@ -6,6 +6,7 @@ import { PermissionRequiredError, type ClassifierPort } from '../services/classi
 import { ProviderError } from '../lib/ai/openai-compatible';
 import type { NotificationPort } from '../services/notification.service';
 import { OrganizerService } from '../services/organizer.service';
+import { SettingsService } from '../services/settings.service';
 
 const MOVE_RESULT: ClassificationResult = {
   action: 'move', targetFolderId: 'folder-dev', confidence: 0.95, reason: '与开发主题匹配。',
@@ -355,7 +356,10 @@ describe('OrganizerService', () => {
     expect((await h.store.load()).jobs['bookmark-1']?.status).toBe('awaiting_configuration');
     expect(h.classifier.classify).not.toHaveBeenCalled();
 
-    await h.organizer.updateSettings({ apiKey: 'test-key' });
+    await new SettingsService({
+      store: h.store, classifier: h.classifier, hasProviderPermission: h.hasProviderPermission,
+      afterUpdate: () => h.organizer.resume(),
+    }).updateSettings({ apiKey: 'test-key' });
     expect(h.classifier.classify).toHaveBeenCalledOnce();
     expect(h.bookmarks.parents.get('bookmark-1')).toBe('folder-dev');
   });

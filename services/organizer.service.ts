@@ -1,6 +1,8 @@
+import { appendActivity } from './activity-log';
+import { historicalScanSummary, refreshHistoricalScan } from './scan-state';
 import { ProviderError } from '../lib/ai/openai-compatible';
 import { PermissionRequiredError, type ClassifierPort } from './classifier.service';
-import { enumerateHistoricalBookmarks, type BookmarkPort, type BookmarkNode } from './bookmark.service';
+import { type BookmarkPort, type BookmarkNode } from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
 import { createId } from '../lib/utils/ids';
 import type {
@@ -14,10 +16,7 @@ import type {
   PersistedState,
   ReviewItem,
   Settings,
-  SettingsDraft,
-  UndoRecord,
 } from '../types/domain';
-import { DEFAULT_SETTINGS } from '../types/domain';
 import type { NotificationPort } from './notification.service';
 
 export interface RetryAlarmPort {
@@ -43,8 +42,6 @@ export class OrganizerService {
   private readonly inFlight = new Set<string>();
   private activeClassifications = 0;
   private mutationChain: Promise<void> = Promise.resolve();
-  private historicalScanStarting = false;
-  private historicalApprovalStarting = false;
   private readonly now: () => number;
   private readonly makeId: (prefix: string) => string;
 
@@ -115,74 +112,6 @@ export class OrganizerService {
     await this.deps.store.update((state) => { delete state.importStartedAt; });
   }
 
-  async startHistoricalScan(): Promise<{ scanId: string; eligibleTotal: number }> {
-    if (this.historicalScanStarting) throw new Error('已有历史扫描正在启动，请稍后重试。');
-    this.historicalScanStarting = true;
-    try {
-      const state = await this.deps.store.load();
-      if (state.historicalScan && ['scanning', 'awaiting_review'].includes(state.historicalScan.status)) {
-        throw new Error('已有历史扫描正在进行，请先处理当前扫描。');
-      }
-      const candidates = enumerateHistoricalBookmarks(await this.deps.bookmarks.getTree(), state.settings.forceOrganize);
-      const existing = new Set<string>();
-      for (const id of Object.keys(state.jobs)) existing.add(id);
-      for (const id of Object.keys(state.reviews)) existing.add(id);
-      const scanId = this.makeId('scan');
-      const fresh = candidates.filter((candidate) => !existing.has(candidate.id));
-      const now = this.now();
-      const scan = {
-        id: scanId, status: 'scanning' as const, startedAt: now, updatedAt: now,
-        eligibleTotal: candidates.length, processedCount: 0, pendingReviewCount: 0,
-        failedCount: 0, skippedCount: candidates.length - fresh.length,
-        coveredIds: candidates.map((candidate) => candidate.id), forceOrganize: state.settings.forceOrganize,
-      };
-      await this.deps.store.update((current) => {
-        current.historicalScan = scan;
-        for (const candidate of fresh) {
-          current.jobs[candidate.id] = {
-            bookmark: candidate,
-            status: current.settings.apiKey.trim() ? 'queued' : 'awaiting_configuration',
-            attempts: 0, createdAt: now, updatedAt: now, scanId,
-          };
-        }
-        appendActivity(current, {
-          kind: 'received', title: '历史书签扫描', message: `已发现 ${candidates.length} 个可扫描书签。`,
-        }, now, this.makeId);
-      });
-      if (state.settings.apiKey.trim()) await this.processPending();
-      await this.refreshHistoricalScan(scanId);
-      return { scanId, eligibleTotal: candidates.length };
-    } finally {
-      this.historicalScanStarting = false;
-    }
-  }
-
-  async approveAllHistoricalReviews(scanId?: string): Promise<number> {
-    if (this.historicalApprovalStarting) throw new Error('历史批量审批正在进行，请稍后重试。');
-    this.historicalApprovalStarting = true;
-    try {
-      const state = await this.deps.store.load();
-      const target = scanId ?? state.historicalScan?.id;
-      if (!target) throw new Error('没有可处理的历史扫描。');
-      const ids = Object.values(state.reviews)
-        .filter((item) => item.scanId === target && item.status === 'pending')
-        .sort((a, b) => a.createdAt - b.createdAt)
-        .map((item) => item.id);
-      let count = 0;
-      for (const id of ids) {
-        try {
-          await this.approveReview(id);
-          count += 1;
-        } catch {
-          // Each item is independently revalidated; stale or failed items do not block the batch.
-        }
-      }
-      await this.refreshHistoricalScan(target);
-      return count;
-    } finally {
-      this.historicalApprovalStarting = false;
-    }
-  }
 
   async undoHistoricalLast(): Promise<number> {
     return this.withMutationLock(async () => {
@@ -263,9 +192,6 @@ export class OrganizerService {
     if (historicalScanId) await this.refreshHistoricalScan(historicalScanId);
   }
 
-  async onSettingsUpdated(): Promise<void> {
-    await this.resume();
-  }
 
   async processPending(): Promise<void> {
     const state = await this.deps.store.load();
@@ -322,46 +248,7 @@ export class OrganizerService {
     };
   }
 
-  async updateSettings(patch: Partial<Omit<Settings, 'apiKey'>> & { apiKey?: string }): Promise<void> {
-    await this.deps.store.update((state) => {
-      state.settings = {
-        ...state.settings,
-        ...patch,
-        apiKey: patch.apiKey?.trim() ? patch.apiKey.trim() : state.settings.apiKey,
-      };
-      if (!state.settings.enabled) {
-        for (const job of Object.values(state.jobs)) {
-          if (job.status === 'processing') job.status = 'queued';
-        }
-      }
-    });
-    if (patch.enabled !== false) await this.onSettingsUpdated();
-  }
 
-  async getSettingsDraft(): Promise<SettingsDraft | null> {
-    const state = await this.deps.store.load();
-    return state.settingsDraft ? structuredClone(state.settingsDraft) : null;
-  }
-
-  async updateSettingsDraft(draft: SettingsDraft): Promise<void> {
-    await this.deps.store.update((state) => {
-      state.settingsDraft = { ...(state.settingsDraft ?? {}), ...draft };
-    });
-  }
-
-  async clearSettingsDraft(): Promise<void> {
-    await this.deps.store.update((state) => { delete state.settingsDraft; });
-  }
-
-  async testProvider(): Promise<void> {
-    const state = await this.deps.store.load();
-    if (!state.settings.apiKey.trim()) throw new Error('请先保存 API Key。');
-    if (!(await this.deps.hasProviderPermission(state.settings.baseUrl))) {
-      throw new Error('尚未授予此 API 地址的网络权限，请从设置页点击授权后重试。');
-    }
-    if (!this.deps.classifier.testProvider) throw new Error('AI 连接测试服务不可用。');
-    await this.deps.classifier.testProvider(state.settings);
-  }
 
   async approveReview(id: string): Promise<void> {
     await this.withMutationLock(async () => {
@@ -800,26 +687,6 @@ export class OrganizerService {
     if (settings.notificationsEnabled) await this.deps.notifications.reviewNeeded(review.id);
   }
 
-  private async refreshHistoricalScan(scanId: string): Promise<void> {
-    await this.deps.store.update((state) => {
-      const scan = state.historicalScan;
-      if (!scan || scan.id !== scanId) return;
-      const jobs = scan.coveredIds.map((id) => state.jobs[id]).filter((job) => job?.scanId === scanId) as BookmarkJob[];
-      const reviews = Object.values(state.reviews).filter((item) => item.scanId === scanId);
-      const scanJobIds = new Set(jobs.map((job) => job.bookmark.id));
-      const scanReviewIds = new Set(reviews.map((item) => item.bookmarkId));
-      const alreadyCovered = scan.coveredIds.filter((id) => !scanJobIds.has(id) && !scanReviewIds.has(id)).length;
-      scan.processedCount = alreadyCovered + jobs.filter((job) => ['completed', 'failed', 'skipped', 'pending_review'].includes(job.status)).length;
-      scan.pendingReviewCount = reviews.filter((item) => item.status === 'pending' || item.status === 'approving').length;
-      scan.failedCount = jobs.filter((job) => job.status === 'failed').length;
-      scan.skippedCount = alreadyCovered + jobs.filter((job) => job.status === 'skipped').length;
-      scan.updatedAt = this.now();
-      const queued = jobs.some((job) => ['queued', 'processing', 'awaiting_configuration', 'awaiting_permission'].includes(job.status));
-      if (queued) scan.status = 'scanning';
-      else if (scan.pendingReviewCount > 0) scan.status = 'awaiting_review';
-      else if (scan.processedCount >= scan.eligibleTotal) scan.status = scan.failedCount > 0 ? 'failed' : 'completed';
-    });
-  }
 
   private async failJob(id: string, message: string, retryable: boolean, settings?: Settings): Promise<void> {
     await this.deps.store.update((state) => {
@@ -841,6 +708,9 @@ export class OrganizerService {
 
   private async notifyFailure(id: string, settings: Settings): Promise<void> {
     if (settings.notificationsEnabled) await this.deps.notifications.processingFailed(id);
+  }
+  private async refreshHistoricalScan(scanId: string): Promise<void> {
+    await this.deps.store.update((state) => refreshHistoricalScan(state, scanId, this.now()));
   }
 
   private async skipJob(id: string, message: string): Promise<void> {
@@ -1026,24 +896,6 @@ function validResultTargets(classified: ClassifiedResult, folders: FolderSummary
   return true;
 }
 
-function appendActivity(
-  state: PersistedState,
-  activity: Omit<ActivityRecord, 'id' | 'at'>,
-  at: number,
-  makeId: (prefix: string) => string,
-): void {
-  state.activities.push({ ...activity, id: makeId('activity'), at });
-  state.activities = state.activities.slice(-100);
-}
-
-function pruneJobs(state: PersistedState): void {
-  const ids = Object.values(state.jobs)
-    .filter((job) => job.status !== 'pending_review')
-    .sort((a, b) => a.updatedAt - b.updatedAt)
-    .slice(0, Math.max(0, Object.keys(state.jobs).length - 250))
-    .map((job) => job.bookmark.id);
-  for (const id of ids) delete state.jobs[id];
-}
 
 function findNode(nodes: BookmarkNode[], id: string): BookmarkNode | null {
   for (const node of nodes) {
@@ -1054,10 +906,11 @@ function findNode(nodes: BookmarkNode[], id: string): BookmarkNode | null {
   return null;
 }
 
-function historicalScanSummary(
-  scan: NonNullable<PersistedState['historicalScan']>,
-  hasUndo: boolean,
-): DashboardState['historicalScan'] {
-  const { coveredIds: _coveredIds, forceOrganize: _forceOrganize, ...summary } = scan;
-  return { ...summary, hasUndo };
+function pruneJobs(state: PersistedState): void {
+  const ids = Object.values(state.jobs)
+    .filter((job) => job.status !== 'pending_review')
+    .sort((a, b) => a.updatedAt - b.updatedAt)
+    .slice(0, Math.max(0, Object.keys(state.jobs).length - 250))
+    .map((job) => job.bookmark.id);
+  for (const id of ids) delete state.jobs[id];
 }

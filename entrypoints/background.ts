@@ -7,6 +7,8 @@ import { ChromeBookmarkService } from '../services/bookmark.service';
 import { ClassificationService } from '../services/classifier.service';
 import { ChromeNotificationService } from '../services/notification.service';
 import { OrganizerService } from '../services/organizer.service';
+import { ScanService } from '../services/scan.service';
+import { SettingsService } from '../services/settings.service';
 import { ProviderProtocolSchema, SettingsDraftSchema } from '../types/domain';
 import type { RuntimeRequest } from '../types/messages';
 
@@ -62,6 +64,18 @@ export default defineBackground(() => {
       }
     },
   });
+  const scan = new ScanService({ bookmarks, store, processPending: () => organizer.processPending(), approveReview: (id) => organizer.approveReview(id) });
+  const settings = new SettingsService({
+    store, classifier,
+    hasProviderPermission: async (baseUrl) => {
+      try {
+        return await chrome.permissions.contains({ origins: [originPermissionPattern(baseUrl)] });
+      } catch {
+        return false;
+      }
+    },
+    afterUpdate: () => organizer.resume(),
+  });
 
   // MV3 event listeners must be registered synchronously at worker evaluation time.
   chrome.bookmarks.onCreated.addListener((id, node) => {
@@ -95,7 +109,7 @@ export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const parsed = RequestSchema.safeParse(message);
     if (!parsed.success) return false;
-    void handleRequest(parsed.data, organizer)
+    void handleRequest(parsed.data, organizer, scan, settings)
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error: unknown) => sendResponse({
         ok: false,
@@ -109,26 +123,24 @@ export default defineBackground(() => {
   void organizer.resume().catch((error: unknown) => reportBackgroundError(error));
 });
 
-async function handleRequest(request: RuntimeRequest, organizer: OrganizerService): Promise<unknown> {
+async function handleRequest(request: RuntimeRequest, organizer: OrganizerService, scan: ScanService, settings: SettingsService): Promise<unknown> {
   switch (request.type) {
-    case 'state:get':
-      return organizer.getDashboardState();
+    case 'state:get': return organizer.getDashboardState();
     case 'settings:update': {
       const patch = request.settings;
       if (patch.baseUrl !== undefined) patch.baseUrl = normalizeBaseUrl(patch.baseUrl);
-      await organizer.updateSettings(patch);
+      await settings.updateSettings(patch);
       return { saved: true };
     }
     case 'provider:test':
-      await organizer.testProvider();
+      await settings.testProvider();
       return { connected: true, model: (await organizer.getDashboardState()).settings.model };
-    case 'settings-draft:get':
-      return { draft: await organizer.getSettingsDraft() };
+    case 'settings-draft:get': return { draft: await settings.getSettingsDraft() };
     case 'settings-draft:set':
-      await organizer.updateSettingsDraft(request.draft);
+      await settings.updateSettingsDraft(request.draft);
       return { saved: true };
     case 'settings-draft:clear':
-      await organizer.clearSettingsDraft();
+      await settings.clearSettingsDraft();
       return { saved: true };
     case 'review:approve':
       await organizer.approveReview(request.id);
@@ -136,14 +148,10 @@ async function handleRequest(request: RuntimeRequest, organizer: OrganizerServic
     case 'review:reject':
       await organizer.rejectReview(request.id);
       return { rejected: true };
-    case 'undo:last':
-      return { undone: true, title: await organizer.undoLastMove() };
-    case 'scan:start':
-      return { started: true, ...(await organizer.startHistoricalScan()) };
-    case 'scan:approve-all':
-      return { approved: true, count: await organizer.approveAllHistoricalReviews(request.scanId) };
-    case 'undo:historical-last':
-      return { undone: true, count: await organizer.undoHistoricalLast() };
+    case 'undo:last': return { undone: true, title: await organizer.undoLastMove() };
+    case 'scan:start': return { started: true, ...(await scan.startHistoricalScan()) };
+    case 'scan:approve-all': return { approved: true, count: await scan.approveAllHistoricalReviews(request.scanId) };
+    case 'undo:historical-last': return { undone: true, count: await organizer.undoHistoricalLast() };
   }
 }
 

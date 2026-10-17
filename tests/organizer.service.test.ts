@@ -3,6 +3,8 @@ import type { ClassifierPort } from '../services/classifier.service';
 import type { BookmarkNode, BookmarkPort } from '../services/bookmark.service';
 import type { NotificationPort } from '../services/notification.service';
 import { OrganizerService } from '../services/organizer.service';
+import { ScanService } from '../services/scan.service';
+import { SettingsService } from '../services/settings.service';
 import { MemoryStateRepository } from '../lib/storage/repository';
 import type { ClassificationResult, FolderSummary } from '../types/domain';
 
@@ -80,6 +82,8 @@ describe('OrganizerService', () => {
   let classifier: ClassifierPort;
   let notifications: NotificationPort;
   let organizer: OrganizerService;
+  let scan: ScanService;
+  let settings: SettingsService;
   let result: ClassificationResult;
 
   beforeEach(async () => {
@@ -96,6 +100,8 @@ describe('OrganizerService', () => {
       hasProviderPermission: async () => true,
       makeId: (prefix) => `${prefix}-test`,
     });
+    scan = new ScanService({ bookmarks, store, processPending: () => organizer.processPending(), approveReview: (id) => organizer.approveReview(id), makeId: (prefix) => `${prefix}-test` });
+    settings = new SettingsService({ store, classifier, hasProviderPermission: async () => true, afterUpdate: () => organizer.resume() });
   });
 
   it('自动移动高置信度的已有目录建议，并保存撤销记录', async () => {
@@ -178,12 +184,12 @@ describe('OrganizerService', () => {
     await store.update((state) => { state.settings.apiKey = ''; });
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
     expect((await store.load()).jobs.b1?.status).toBe('awaiting_configuration');
-    await organizer.updateSettings({ apiKey: 'test-key' });
+    await settings.updateSettings({ apiKey: 'test-key' });
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);
   });
 
   it('历史扫描始终生成预览，不受新增书签自动模式影响', async () => {
-    const started = await organizer.startHistoricalScan();
+    const started = await scan.startHistoricalScan();
     expect(started.eligibleTotal).toBe(1);
     expect(bookmarks.moves).toHaveLength(0);
     const state = await store.load();
@@ -193,15 +199,15 @@ describe('OrganizerService', () => {
   });
 
   it('并发启动历史扫描只接受一个扫描锁', async () => {
-    const results = await Promise.allSettled([organizer.startHistoricalScan(), organizer.startHistoricalScan()]);
+    const results = await Promise.allSettled([scan.startHistoricalScan(), scan.startHistoricalScan()]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
   });
 
   it('历史建议支持批量批准并撤销本批次移动', async () => {
-    const { scanId } = await organizer.startHistoricalScan();
+    const { scanId } = await scan.startHistoricalScan();
     expect(bookmarks.moves).toHaveLength(0);
-    expect(await organizer.approveAllHistoricalReviews(scanId)).toBe(1);
+    expect(await scan.approveAllHistoricalReviews(scanId)).toBe(1);
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);
     expect((await store.load()).lastHistoricalUndo?.moved).toHaveLength(1);
     expect(await organizer.undoHistoricalLast()).toBe(1);
@@ -209,10 +215,10 @@ describe('OrganizerService', () => {
   });
 
   it('并发批量批准只允许一个请求执行', async () => {
-    const { scanId } = await organizer.startHistoricalScan();
+    const { scanId } = await scan.startHistoricalScan();
     const results = await Promise.allSettled([
-      organizer.approveAllHistoricalReviews(scanId),
-      organizer.approveAllHistoricalReviews(scanId),
+      scan.approveAllHistoricalReviews(scanId),
+      scan.approveAllHistoricalReviews(scanId),
     ]);
     expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
     expect(results.filter((result) => result.status === 'rejected')[0]).toMatchObject({
@@ -247,10 +253,10 @@ describe('OrganizerService', () => {
   });
 
   it('历史建议审批前发现书签手动移动时标记过期', async () => {
-    const { scanId } = await organizer.startHistoricalScan();
+    const { scanId } = await scan.startHistoricalScan();
     await bookmarks.moveBookmark('b1', 'other');
 
-    expect(await organizer.approveAllHistoricalReviews(scanId)).toBe(0);
+    expect(await scan.approveAllHistoricalReviews(scanId)).toBe(0);
     expect((await store.load()).reviews.b1?.status).toBe('stale');
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'other' }]);
   });
