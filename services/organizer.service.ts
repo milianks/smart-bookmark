@@ -1,6 +1,6 @@
 import { ProviderError } from '../lib/ai/openai-compatible';
 import { PermissionRequiredError, type ClassifierPort } from './classifier.service';
-import type { BookmarkPort, BookmarkNode } from './bookmark.service';
+import { enumerateHistoricalBookmarks, type BookmarkPort, type BookmarkNode } from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
 import { createId } from '../lib/utils/ids';
 import type {
@@ -43,6 +43,8 @@ export class OrganizerService {
   private readonly inFlight = new Set<string>();
   private activeClassifications = 0;
   private mutationChain: Promise<void> = Promise.resolve();
+  private historicalScanStarting = false;
+  private historicalApprovalStarting = false;
   private readonly now: () => number;
   private readonly makeId: (prefix: string) => string;
 
@@ -113,6 +115,113 @@ export class OrganizerService {
     await this.deps.store.update((state) => { delete state.importStartedAt; });
   }
 
+  async startHistoricalScan(): Promise<{ scanId: string; eligibleTotal: number }> {
+    if (this.historicalScanStarting) throw new Error('已有历史扫描正在启动，请稍后重试。');
+    this.historicalScanStarting = true;
+    try {
+      const state = await this.deps.store.load();
+      if (state.historicalScan && ['scanning', 'awaiting_review'].includes(state.historicalScan.status)) {
+        throw new Error('已有历史扫描正在进行，请先处理当前扫描。');
+      }
+      const candidates = enumerateHistoricalBookmarks(await this.deps.bookmarks.getTree(), state.settings.forceOrganize);
+      const existing = new Set<string>();
+      for (const id of Object.keys(state.jobs)) existing.add(id);
+      for (const id of Object.keys(state.reviews)) existing.add(id);
+      const scanId = this.makeId('scan');
+      const fresh = candidates.filter((candidate) => !existing.has(candidate.id));
+      const now = this.now();
+      const scan = {
+        id: scanId, status: 'scanning' as const, startedAt: now, updatedAt: now,
+        eligibleTotal: candidates.length, processedCount: 0, pendingReviewCount: 0,
+        failedCount: 0, skippedCount: candidates.length - fresh.length,
+        coveredIds: candidates.map((candidate) => candidate.id), forceOrganize: state.settings.forceOrganize,
+      };
+      await this.deps.store.update((current) => {
+        current.historicalScan = scan;
+        for (const candidate of fresh) {
+          current.jobs[candidate.id] = {
+            bookmark: candidate,
+            status: current.settings.apiKey.trim() ? 'queued' : 'awaiting_configuration',
+            attempts: 0, createdAt: now, updatedAt: now, scanId,
+          };
+        }
+        appendActivity(current, {
+          kind: 'received', title: '历史书签扫描', message: `已发现 ${candidates.length} 个可扫描书签。`,
+        }, now, this.makeId);
+      });
+      if (state.settings.apiKey.trim()) await this.processPending();
+      await this.refreshHistoricalScan(scanId);
+      return { scanId, eligibleTotal: candidates.length };
+    } finally {
+      this.historicalScanStarting = false;
+    }
+  }
+
+  async approveAllHistoricalReviews(scanId?: string): Promise<number> {
+    if (this.historicalApprovalStarting) throw new Error('历史批量审批正在进行，请稍后重试。');
+    this.historicalApprovalStarting = true;
+    try {
+      const state = await this.deps.store.load();
+      const target = scanId ?? state.historicalScan?.id;
+      if (!target) throw new Error('没有可处理的历史扫描。');
+      const ids = Object.values(state.reviews)
+        .filter((item) => item.scanId === target && item.status === 'pending')
+        .sort((a, b) => a.createdAt - b.createdAt)
+        .map((item) => item.id);
+      let count = 0;
+      for (const id of ids) {
+        try {
+          await this.approveReview(id);
+          count += 1;
+        } catch {
+          // Each item is independently revalidated; stale or failed items do not block the batch.
+        }
+      }
+      await this.refreshHistoricalScan(target);
+      return count;
+    } finally {
+      this.historicalApprovalStarting = false;
+    }
+  }
+
+  async undoHistoricalLast(): Promise<number> {
+    return this.withMutationLock(async () => {
+      const state = await this.deps.store.load();
+      const record = state.lastHistoricalUndo;
+      if (!record || record.moved.length === 0) throw new Error('没有可以撤销的历史批量归档。');
+      let count = 0;
+      for (const move of record.moved) {
+        const bookmark = await this.deps.bookmarks.getBookmark(move.bookmarkId);
+        if (!bookmark || bookmark.parentId !== move.toFolderId || !(await this.deps.bookmarks.folderExists(move.fromFolderId))) {
+          await this.appendActivity({
+            kind: 'skipped', bookmarkId: move.bookmarkId, title: move.title,
+            message: '历史批量撤销跳过：书签已删除、手动移动或原文件夹不存在。',
+          });
+          continue;
+        }
+        const operation: PendingOperation = {
+          ...move,
+          fromFolderId: move.toFolderId,
+          toFolderId: move.fromFolderId,
+          movedAt: this.now(), operationId: this.makeId('undo'), state: 'prepared', kind: 'undo', scanId: record.scanId,
+        };
+        await this.deps.store.update((current) => { current.pendingOperation = operation; });
+        try {
+          await this.moveWithRecovery(operation);
+          count += 1;
+        } catch {
+          // Leave manually changed or failed items untouched.
+        }
+      }
+      await this.deps.store.update((current) => {
+        current.lastHistoricalUndo = undefined;
+        current.pendingOperation = undefined;
+        appendActivity(current, { kind: 'undone', title: '历史批量归档', message: `已撤销 ${count} 条历史归档。` }, this.now(), this.makeId);
+      });
+      return count;
+    });
+  }
+
   async resume(): Promise<void> {
     await this.reconcilePendingOperation();
     const now = this.now();
@@ -150,6 +259,8 @@ export class OrganizerService {
       }
     });
     await this.processPending();
+    const historicalScanId = (await this.deps.store.load()).historicalScan?.id;
+    if (historicalScanId) await this.refreshHistoricalScan(historicalScanId);
   }
 
   async onSettingsUpdated(): Promise<void> {
@@ -158,15 +269,15 @@ export class OrganizerService {
 
   async processPending(): Promise<void> {
     const state = await this.deps.store.load();
-    if (!state.settings.enabled) return;
     const readyJobs = Object.values(state.jobs)
       .filter((job) => job.status === 'queued'
+        && (state.settings.enabled || Boolean(job.scanId))
         && (job.nextAttemptAt === undefined || job.nextAttemptAt <= this.now()))
       .sort((a, b) => a.createdAt - b.createdAt)
       .slice(0, MAX_CONCURRENT_CLASSIFICATIONS);
     await Promise.allSettled(readyJobs.map((job) => this.processJob(job.bookmark.id)));
     const latest = await this.deps.store.load();
-    const queued = Object.values(latest.jobs).filter((job) => job.status === 'queued');
+    const queued = Object.values(latest.jobs).filter((job) => job.status === 'queued' && (latest.settings.enabled || Boolean(job.scanId)));
     const hasDueJobs = queued.some((job) => job.nextAttemptAt === undefined || job.nextAttemptAt <= this.now());
     if (hasDueJobs) {
       await this.deps.alarms.schedule(2_000);
@@ -193,6 +304,9 @@ export class OrganizerService {
       pendingReviews: Object.values(state.reviews)
         .filter((item) => item.status === 'pending' || item.status === 'approving')
         .sort((a, b) => b.createdAt - a.createdAt),
+      historicalReviews: Object.values(state.reviews)
+        .filter((item) => Boolean(item.scanId))
+        .sort((a, b) => b.createdAt - a.createdAt),
       recentJobs: Object.values(state.jobs)
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 8),
@@ -201,6 +315,10 @@ export class OrganizerService {
       awaitingPermissionCount: Object.values(state.jobs).filter((job) => job.status === 'awaiting_permission').length,
       ...(state.lastUndo ? { lastUndo: state.lastUndo } : {}),
       aiStatus: configured ? (permission ? 'configured' : 'permission-needed') : 'missing-key',
+      ...(state.historicalScan ? {
+        historicalScan: historicalScanSummary(state.historicalScan, Boolean(state.lastHistoricalUndo?.moved.length)),
+      } : {}),
+      historicalUndoAvailable: Boolean(state.lastHistoricalUndo?.moved.length),
     };
   }
 
@@ -303,6 +421,7 @@ export class OrganizerService {
         targetName = target.title;
       } else {
         await this.closeReview(item, 'approved', '用户确认保留原位。', 'kept');
+        if (item.scanId) await this.refreshHistoricalScan(item.scanId);
         return;
       }
 
@@ -313,6 +432,7 @@ export class OrganizerService {
       }
       if (targetFolderId === item.sourceParentId) {
         await this.closeReview(item, 'approved', '书签已位于推荐文件夹，无需移动。', 'review_approved');
+        if (item.scanId) await this.refreshHistoricalScan(item.scanId);
         return;
       }
 
@@ -326,6 +446,7 @@ export class OrganizerService {
         state: 'prepared',
         kind: 'review',
         reviewId: id,
+        ...(item.scanId ? { scanId: item.scanId } : {}),
       };
       await this.deps.store.update((current) => { current.pendingOperation = operation; });
       if (await this.moveWithRecovery(operation)) return;
@@ -335,12 +456,27 @@ export class OrganizerService {
         const job = current.jobs[item.bookmarkId];
         if (job) job.status = 'completed';
         current.pendingOperation = undefined;
+        if (item.scanId) {
+          const previous = current.lastHistoricalUndo?.scanId === item.scanId
+            ? current.lastHistoricalUndo
+            : { scanId: item.scanId, moved: [], createdAt: this.now() };
+          previous.moved.push({
+            bookmarkId: operation.bookmarkId,
+            title: operation.title,
+            fromFolderId: operation.fromFolderId,
+            toFolderId: operation.toFolderId,
+            movedAt: operation.movedAt,
+            operationId: operation.operationId,
+          });
+          current.lastHistoricalUndo = previous;
+        }
         appendActivity(current, {
           kind: 'review_approved', bookmarkId: item.bookmarkId, title: item.title, url: item.url,
           message: `已移动到 ${targetName}。`, source: item.source,
           fromFolderId: item.sourceParentId, toFolderId: targetFolderId,
         }, this.now(), this.makeId);
       });
+      if (item.scanId) await this.refreshHistoricalScan(item.scanId);
     });
   }
 
@@ -351,6 +487,7 @@ export class OrganizerService {
       if (!item || item.status === 'rejected') return;
       if (item.status === 'approved' || item.status === 'stale') throw new Error('这条建议已经关闭。');
       await this.closeReview(item, 'rejected', '用户选择保留书签原位。', 'review_rejected');
+      if (item.scanId) await this.refreshHistoricalScan(item.scanId);
     });
   }
 
@@ -401,7 +538,7 @@ export class OrganizerService {
       let job = state.jobs[id];
       if (!job || !['queued', 'processing'].includes(job.status)) return;
       if (job.nextAttemptAt !== undefined && job.nextAttemptAt > this.now()) return;
-      if (!state.settings.enabled) return;
+      if (!state.settings.enabled && !job.scanId) return;
       if (!state.settings.apiKey.trim()) {
         await this.updateJob(id, (current) => { current.status = 'awaiting_configuration'; });
         return;
@@ -415,7 +552,10 @@ export class OrganizerService {
         await this.skipJob(id, '书签已被手动移动，已尊重当前目录。');
         return;
       }
-      if (!state.settings.forceOrganize && !(await this.deps.bookmarks.isEligibleRoot(bookmark.parentId ?? ''))) {
+      const historicalForce = job.scanId && state.historicalScan?.id === job.scanId
+        ? state.historicalScan.forceOrganize
+        : state.settings.forceOrganize;
+      if (!historicalForce && !(await this.deps.bookmarks.isEligibleRoot(bookmark.parentId ?? ''))) {
         await this.skipJob(id, '书签不在可自动整理的内置目录中。');
         return;
       }
@@ -483,6 +623,10 @@ export class OrganizerService {
         });
         return;
       }
+      if (job.scanId) {
+        await this.createReview(job, result, classified.source, folders, state.settings);
+        return;
+      }
       if (result.action === 'suggest_folder'
         || result.action === 'move'
           && (state.settings.mode === 'confirm' || result.confidence < state.settings.confidenceThreshold)) {
@@ -499,6 +643,8 @@ export class OrganizerService {
     } finally {
       this.inFlight.delete(id);
       this.activeClassifications -= 1;
+      const historical = (await this.deps.store.load()).jobs[id]?.scanId;
+      if (historical) await this.refreshHistoricalScan(historical);
       void this.processPending();
     }
   }
@@ -639,6 +785,7 @@ export class OrganizerService {
           : {}),
       createdAt: this.now(),
       status: 'pending',
+      ...(job.scanId ? { scanId: job.scanId } : {}),
     };
     await this.deps.store.update((state) => {
       if (state.reviews[review.id]?.status === 'pending') return;
@@ -651,6 +798,27 @@ export class OrganizerService {
       }, this.now(), this.makeId);
     });
     if (settings.notificationsEnabled) await this.deps.notifications.reviewNeeded(review.id);
+  }
+
+  private async refreshHistoricalScan(scanId: string): Promise<void> {
+    await this.deps.store.update((state) => {
+      const scan = state.historicalScan;
+      if (!scan || scan.id !== scanId) return;
+      const jobs = scan.coveredIds.map((id) => state.jobs[id]).filter((job) => job?.scanId === scanId) as BookmarkJob[];
+      const reviews = Object.values(state.reviews).filter((item) => item.scanId === scanId);
+      const scanJobIds = new Set(jobs.map((job) => job.bookmark.id));
+      const scanReviewIds = new Set(reviews.map((item) => item.bookmarkId));
+      const alreadyCovered = scan.coveredIds.filter((id) => !scanJobIds.has(id) && !scanReviewIds.has(id)).length;
+      scan.processedCount = alreadyCovered + jobs.filter((job) => ['completed', 'failed', 'skipped', 'pending_review'].includes(job.status)).length;
+      scan.pendingReviewCount = reviews.filter((item) => item.status === 'pending' || item.status === 'approving').length;
+      scan.failedCount = jobs.filter((job) => job.status === 'failed').length;
+      scan.skippedCount = alreadyCovered + jobs.filter((job) => job.status === 'skipped').length;
+      scan.updatedAt = this.now();
+      const queued = jobs.some((job) => ['queued', 'processing', 'awaiting_configuration', 'awaiting_permission'].includes(job.status));
+      if (queued) scan.status = 'scanning';
+      else if (scan.pendingReviewCount > 0) scan.status = 'awaiting_review';
+      else if (scan.processedCount >= scan.eligibleTotal) scan.status = scan.failedCount > 0 ? 'failed' : 'completed';
+    });
   }
 
   private async failJob(id: string, message: string, retryable: boolean, settings?: Settings): Promise<void> {
@@ -789,6 +957,19 @@ export class OrganizerService {
           }, this.now(), this.makeId);
         } else if (pending.kind === 'review' && review) {
           review.status = 'approved';
+          if (pending.scanId) {
+            const previous = state.lastHistoricalUndo?.scanId === pending.scanId
+              ? state.lastHistoricalUndo
+              : { scanId: pending.scanId, moved: [], createdAt: this.now() };
+            if (!previous.moved.some((move) => move.operationId === pending.operationId)) {
+              previous.moved.push({
+                bookmarkId: pending.bookmarkId, title: pending.title,
+                fromFolderId: pending.fromFolderId, toFolderId: pending.toFolderId,
+                movedAt: pending.movedAt, operationId: pending.operationId,
+              });
+            }
+            state.lastHistoricalUndo = previous;
+          }
           appendActivity(state, {
             kind: 'review_approved', bookmarkId: pending.bookmarkId, title: pending.title,
             message: '确认的归档操作已完成。',
@@ -871,4 +1052,12 @@ function findNode(nodes: BookmarkNode[], id: string): BookmarkNode | null {
     if (found) return found;
   }
   return null;
+}
+
+function historicalScanSummary(
+  scan: NonNullable<PersistedState['historicalScan']>,
+  hasUndo: boolean,
+): DashboardState['historicalScan'] {
+  const { coveredIds: _coveredIds, forceOrganize: _forceOrganize, ...summary } = scan;
+  return { ...summary, hasUndo };
 }

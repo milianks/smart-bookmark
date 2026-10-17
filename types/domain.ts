@@ -99,6 +99,7 @@ export interface BookmarkJob {
   lastError?: string;
   classification?: ClassificationResult;
   classificationSource?: ClassificationSource;
+  scanId?: string;
 }
 
 export type ReviewStatus = 'pending' | 'approving' | 'approved' | 'rejected' | 'stale';
@@ -116,6 +117,24 @@ export interface ReviewItem {
   createdAt: number;
   status: ReviewStatus;
   targetFolderId?: string;
+  scanId?: string;
+}
+
+export type HistoricalScanStatus = 'idle' | 'scanning' | 'awaiting_review' | 'completed' | 'failed';
+
+export interface HistoricalScanState {
+  id: string;
+  status: HistoricalScanStatus;
+  startedAt: number;
+  updatedAt: number;
+  eligibleTotal: number;
+  processedCount: number;
+  pendingReviewCount: number;
+  failedCount: number;
+  skippedCount: number;
+  coveredIds: string[];
+  forceOrganize: boolean;
+  lastError?: string;
 }
 
 export type ActivityKind =
@@ -162,6 +181,13 @@ export interface PendingOperation extends UndoRecord {
   state: 'prepared';
   kind: 'automatic' | 'review' | 'undo';
   reviewId?: string;
+  scanId?: string;
+}
+
+export interface HistoricalBatchUndoRecord {
+  scanId: string;
+  moved: UndoRecord[];
+  createdAt: number;
 }
 
 export interface PersistedState {
@@ -175,17 +201,26 @@ export interface PersistedState {
   pendingOperation?: PendingOperation;
   importStartedAt?: number;
   settingsDraft?: SettingsDraft;
+  historicalScan?: HistoricalScanState;
+  lastHistoricalUndo?: HistoricalBatchUndoRecord;
+}
+
+export interface HistoricalScanSummary extends Omit<HistoricalScanState, 'coveredIds' | 'forceOrganize'> {
+  hasUndo: boolean;
 }
 
 export interface DashboardState {
   settings: PublicSettings;
   pendingReviews: ReviewItem[];
+  historicalReviews: ReviewItem[];
   recentJobs: BookmarkJob[];
   activities: ActivityRecord[];
   awaitingConfigurationCount: number;
   awaitingPermissionCount: number;
   lastUndo?: UndoRecord;
   aiStatus: 'configured' | 'missing-key' | 'permission-needed';
+  historicalScan?: HistoricalScanSummary;
+  historicalUndoAvailable: boolean;
 }
 
 export interface ClassifiedResult {
@@ -200,4 +235,5 @@ export const emptyPersistedState = (): PersistedState => ({
   reviews: {},
   cache: {},
   activities: [],
+  historicalScan: undefined,
 });

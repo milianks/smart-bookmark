@@ -20,7 +20,7 @@ await store.update((state) => {
 
 This is the update style used by `OrganizerService` and `ClassificationService`. Keep the mutator synchronous and put asynchronous work before or after the repository update. Use `MemoryStateRepository` or a small `StateRepository` fake in service tests instead of requiring a browser profile.
 
-The repository currently stores one versioned state object under `ai-bookmark-manager.state.v1`. Its fields include `settings`, `jobs`, `reviews`, `cache`, `activities`, and optional `lastUndo`, `pendingOperation`, `importStartedAt`, and `settingsDraft`. The `version: 1` field is a format marker; no migration runner exists. If the persisted shape changes, preserve safe defaults/normalization in the repository and add tests for old or malformed stored values.
+The repository currently stores one versioned state object under `ai-bookmark-manager.state.v1`. Its fields include `settings`, `jobs`, `reviews`, `cache`, `activities`, and optional `lastUndo`, `pendingOperation`, `importStartedAt`, `settingsDraft`, `historicalScan`, and `lastHistoricalUndo`. Historical jobs and reviews may carry `scanId`; the dashboard receives a summary without internal covered IDs. The `version: 1` field is a format marker; no migration runner exists. If the persisted shape changes, preserve safe defaults/normalization in the repository and add tests for old or malformed stored values.
 
 ## Migrations
 

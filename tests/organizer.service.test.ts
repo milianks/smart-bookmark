@@ -181,4 +181,77 @@ describe('OrganizerService', () => {
     await organizer.updateSettings({ apiKey: 'test-key' });
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);
   });
+
+  it('历史扫描始终生成预览，不受新增书签自动模式影响', async () => {
+    const started = await organizer.startHistoricalScan();
+    expect(started.eligibleTotal).toBe(1);
+    expect(bookmarks.moves).toHaveLength(0);
+    const state = await store.load();
+    expect(state.historicalScan?.id).toBe(started.scanId);
+    expect(state.reviews.b1?.scanId).toBe(started.scanId);
+    expect(state.reviews.b1?.status).toBe('pending');
+  });
+
+  it('并发启动历史扫描只接受一个扫描锁', async () => {
+    const results = await Promise.allSettled([organizer.startHistoricalScan(), organizer.startHistoricalScan()]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(1);
+  });
+
+  it('历史建议支持批量批准并撤销本批次移动', async () => {
+    const { scanId } = await organizer.startHistoricalScan();
+    expect(bookmarks.moves).toHaveLength(0);
+    expect(await organizer.approveAllHistoricalReviews(scanId)).toBe(1);
+    expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);
+    expect((await store.load()).lastHistoricalUndo?.moved).toHaveLength(1);
+    expect(await organizer.undoHistoricalLast()).toBe(1);
+    expect(bookmarks.moves.at(-1)).toEqual({ id: 'b1', target: 'bar' });
+  });
+
+  it('并发批量批准只允许一个请求执行', async () => {
+    const { scanId } = await organizer.startHistoricalScan();
+    const results = await Promise.allSettled([
+      organizer.approveAllHistoricalReviews(scanId),
+      organizer.approveAllHistoricalReviews(scanId),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((result) => result.status === 'rejected')[0]).toMatchObject({
+      reason: new Error('历史批量审批正在进行，请稍后重试。'),
+    });
+    expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);
+  });
+
+  it('Worker 重启后继续处理持久化的历史扫描任务', async () => {
+    await store.update((state) => {
+      state.historicalScan = {
+        id: 'scan-restart', status: 'scanning', startedAt: 1, updatedAt: 1,
+        eligibleTotal: 1, processedCount: 0, pendingReviewCount: 0,
+        failedCount: 0, skippedCount: 0, coveredIds: ['b1'], forceOrganize: false,
+      };
+      state.jobs.b1 = {
+        bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'bar' },
+        status: 'queued', attempts: 0, createdAt: 1, updatedAt: 1, scanId: 'scan-restart',
+      };
+    });
+
+    const restarted = new OrganizerService({
+      bookmarks, store, classifier, notifications, alarms: { schedule: vi.fn() },
+      hasProviderPermission: async () => true,
+      makeId: (prefix) => `${prefix}-restart`,
+    });
+    await restarted.resume();
+
+    const state = await store.load();
+    expect(state.reviews.b1).toMatchObject({ scanId: 'scan-restart', status: 'pending' });
+    expect(bookmarks.moves).toHaveLength(0);
+  });
+
+  it('历史建议审批前发现书签手动移动时标记过期', async () => {
+    const { scanId } = await organizer.startHistoricalScan();
+    await bookmarks.moveBookmark('b1', 'other');
+
+    expect(await organizer.approveAllHistoricalReviews(scanId)).toBe(0);
+    expect((await store.load()).reviews.b1?.status).toBe('stale');
+    expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'other' }]);
+  });
 });

@@ -30,6 +30,44 @@ export interface BookmarkPort {
   createFolder(name: string, parentId: string): Promise<BookmarkNode>;
 }
 
+export interface HistoricalBookmarkCandidate {
+  id: string;
+  title: string;
+  url: string;
+  parentId: string;
+  dateAdded?: number;
+}
+
+/** Enumerate editable HTTP(S) bookmarks without crossing the protection boundary. */
+export function enumerateHistoricalBookmarks(tree: BookmarkNode[], forceOrganize: boolean): HistoricalBookmarkCandidate[] {
+  const result: HistoricalBookmarkCandidate[] = [];
+  const seen = new Set<string>();
+  const visit = (node: BookmarkNode, rootType?: string, rootManaged = false, directBuiltinChild = false) => {
+    const nextRootType = node.folderType ?? rootType;
+    const managed = rootManaged || node.unmodifiable === 'managed' || node.folderType === 'managed';
+    if (node.url && node.parentId && isHttpUrl(node.url) && !managed) {
+      const eligible = nextRootType !== undefined && (!forceOrganize ? directBuiltinChild : true);
+      if (eligible && !seen.has(node.id)) {
+        seen.add(node.id);
+        result.push({ id: node.id, title: node.title || '(无标题)', url: node.url, parentId: node.parentId, ...(node.dateAdded ? { dateAdded: node.dateAdded } : {}) });
+      }
+    }
+    const isBuiltinRoot = !node.url && ['bookmarks-bar', 'other', 'mobile'].includes(node.folderType ?? '') && !managed;
+    for (const child of node.children ?? []) visit(child, nextRootType, managed, isBuiltinRoot);
+  };
+  for (const root of tree) visit(root);
+  return result;
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export class ChromeBookmarkService implements BookmarkPort {
   constructor(private readonly api: BookmarkApi = chrome.bookmarks) {}
 

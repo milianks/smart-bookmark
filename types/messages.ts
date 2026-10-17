@@ -9,7 +9,10 @@ export type RuntimeRequest =
   | { type: 'settings-draft:clear' }
   | { type: 'review:approve'; id: string }
   | { type: 'review:reject'; id: string }
-  | { type: 'undo:last' };
+  | { type: 'undo:last' }
+  | { type: 'scan:start' }
+  | { type: 'scan:approve-all'; scanId?: string }
+  | { type: 'undo:historical-last' };
 
 export type RuntimeData =
   | DashboardState
@@ -18,7 +21,10 @@ export type RuntimeData =
   | { draft: SettingsDraft | null }
   | { approved: true }
   | { rejected: true }
-  | { undone: true; title: string };
+  | { undone: true; title: string }
+  | { started: true; scanId: string; eligibleTotal: number }
+  | { approved: true; count: number }
+  | { undone: true; count: number };
 
 export type RuntimeResponse =
   | { ok: true; data: RuntimeData }

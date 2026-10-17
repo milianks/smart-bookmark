@@ -33,6 +33,9 @@ const RequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('review:approve'), id: z.string().min(1) }).strict(),
   z.object({ type: z.literal('review:reject'), id: z.string().min(1) }).strict(),
   z.object({ type: z.literal('undo:last') }).strict(),
+  z.object({ type: z.literal('scan:start') }).strict(),
+  z.object({ type: z.literal('scan:approve-all'), scanId: z.string().min(1).optional() }).strict(),
+  z.object({ type: z.literal('undo:historical-last') }).strict(),
 ]);
 
 export default defineBackground(() => {
@@ -135,6 +138,12 @@ async function handleRequest(request: RuntimeRequest, organizer: OrganizerServic
       return { rejected: true };
     case 'undo:last':
       return { undone: true, title: await organizer.undoLastMove() };
+    case 'scan:start':
+      return { started: true, ...(await organizer.startHistoricalScan()) };
+    case 'scan:approve-all':
+      return { approved: true, count: await organizer.approveAllHistoricalReviews(request.scanId) };
+    case 'undo:historical-last':
+      return { undone: true, count: await organizer.undoHistoricalLast() };
   }
 }
 

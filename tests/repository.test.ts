@@ -82,4 +82,36 @@ describe('ChromeStateRepository', () => {
       mode: 'confirm',
     });
   });
+
+  it('normalizes persisted historical scan and batch undo state', async () => {
+    const values: Record<string, unknown> = {
+      [STORAGE_KEY]: {
+        version: 1,
+        settings: { apiKey: 'fixture' },
+        jobs: {},
+        reviews: {},
+        cache: {},
+        activities: [],
+        historicalScan: {
+          id: 'scan-1', status: 'awaiting_review', startedAt: 10, updatedAt: 20,
+          eligibleTotal: 2, processedCount: 1, pendingReviewCount: 1,
+          failedCount: 0, skippedCount: 0, coveredIds: ['bookmark-1', 'bookmark-2'],
+          forceOrganize: false,
+        },
+        lastHistoricalUndo: {
+          scanId: 'scan-1', createdAt: 30,
+          moved: [{ bookmarkId: 'bookmark-1', title: 'Example', fromFolderId: 'bar', toFolderId: 'dev', movedAt: 25, operationId: 'op-1' }],
+        },
+      },
+    };
+    const storage: LocalStorageArea = {
+      get: vi.fn(async (key) => ({ [key]: values[key] })),
+      set: vi.fn(async (items) => Object.assign(values, items)),
+    };
+
+    const loaded = await new ChromeStateRepository(storage).load();
+
+    expect(loaded.historicalScan).toMatchObject({ id: 'scan-1', status: 'awaiting_review', coveredIds: ['bookmark-1', 'bookmark-2'] });
+    expect(loaded.lastHistoricalUndo?.moved).toHaveLength(1);
+  });
 });

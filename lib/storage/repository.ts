@@ -3,6 +3,8 @@ import {
   SettingsSchema,
   SettingsDraftSchema,
   emptyPersistedState,
+  type HistoricalBatchUndoRecord,
+  type HistoricalScanState,
   type PersistedState,
 } from '../../types/domain';
 
@@ -60,10 +62,49 @@ function normalizeState(input: Partial<PersistedState>): PersistedState {
     reviews: input.reviews && typeof input.reviews === 'object' ? input.reviews : {},
     cache: input.cache && typeof input.cache === 'object' ? input.cache : {},
     activities: Array.isArray(input.activities) ? input.activities.slice(-100) : [],
+    historicalScan: normalizeHistoricalScan(input.historicalScan),
+    lastHistoricalUndo: normalizeHistoricalUndo(input.lastHistoricalUndo),
     ...(SettingsDraftSchema.safeParse(input.settingsDraft).success
       ? { settingsDraft: SettingsDraftSchema.parse(input.settingsDraft) }
       : {}),
   };
+}
+
+function normalizeHistoricalScan(input: unknown): HistoricalScanState | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const value = input as Record<string, unknown>;
+  const id = typeof value.id === 'string' ? value.id : '';
+  const status = value.status;
+  if (!id || !['idle', 'scanning', 'awaiting_review', 'completed', 'failed'].includes(String(status))) return undefined;
+  const number = (key: string) => typeof value[key] === 'number' && Number.isFinite(value[key]) ? Math.max(0, Math.floor(value[key] as number)) : 0;
+  const coveredIds = Array.isArray(value.coveredIds) ? value.coveredIds.filter((id): id is string => typeof id === 'string') : [];
+  return {
+    id,
+    status: status as HistoricalScanState['status'],
+    startedAt: number('startedAt'),
+    updatedAt: number('updatedAt'),
+    eligibleTotal: number('eligibleTotal'),
+    processedCount: number('processedCount'),
+    pendingReviewCount: number('pendingReviewCount'),
+    failedCount: number('failedCount'),
+    skippedCount: number('skippedCount'),
+    coveredIds: [...new Set(coveredIds)],
+    forceOrganize: value.forceOrganize === true,
+    ...(typeof value.lastError === 'string' ? { lastError: value.lastError.slice(0, 500) } : {}),
+  };
+}
+
+function normalizeHistoricalUndo(input: unknown): HistoricalBatchUndoRecord | undefined {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const value = input as Record<string, unknown>;
+  if (typeof value.scanId !== 'string' || !Array.isArray(value.moved)) return undefined;
+  const moved = value.moved.filter((record): record is HistoricalBatchUndoRecord['moved'][number] => {
+    if (!record || typeof record !== 'object') return false;
+    const item = record as Record<string, unknown>;
+    return ['bookmarkId', 'title', 'fromFolderId', 'toFolderId', 'operationId'].every((key) => typeof item[key] === 'string')
+      && typeof item.movedAt === 'number';
+  }).slice(-500);
+  return { scanId: value.scanId, moved, createdAt: typeof value.createdAt === 'number' ? value.createdAt : Date.now() };
 }
 
 function normalizeSettings(input: unknown): PersistedState['settings'] {

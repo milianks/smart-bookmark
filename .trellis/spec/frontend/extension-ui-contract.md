@@ -29,3 +29,10 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 - Keep page entrypoints thin: mount the corresponding exported component and shared stylesheet.
 - Type-check the full workspace, including WXT-generated `.wxt/types` declarations.
 - Review keyboard labels and native form semantics for controls; never rely on color alone to communicate state.
+
+## Historical scan UI contract
+
+- Start historical scans, batch approval, and historical undo only through `RuntimeRequest` messages. The popup renders scan status/counts from `DashboardState`; it does not enumerate bookmarks or inspect storage.
+- Historical scan status `scanning` and `awaiting_review` disable the start control. Review pages may show per-item status and a guarded approve-all action; refresh dashboard state after every mutation.
+- The background may return `historicalReviews` for status display, but must omit scan internals (`coveredIds`, force flags), API keys, provider payloads, and raw errors.
+- Batch actions must expose `role="status"` success text and `role="alert"` errors. Stale/manual-move outcomes remain visible as item status rather than disappearing silently.

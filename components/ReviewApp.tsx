@@ -11,6 +11,8 @@ export function ReviewApp() {
   const [busyId, setBusyId] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [scanId, setScanId] = useState('');
+  const [batchBusy, setBatchBusy] = useState(false);
 
   const refresh = useCallback(async () => {
     const response = await sendMessage({ type: 'state:get' });
@@ -20,10 +22,14 @@ export function ReviewApp() {
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     setSelected(query.get('item') ?? '');
+    setScanId(query.get('scan') ?? '');
     void refresh().catch((reason: unknown) => setError(messageOf(reason)));
   }, [refresh]);
 
-  const items = useMemo(() => state?.pendingReviews ?? [], [state]);
+  const items = useMemo(() => {
+    const all = scanId ? (state?.historicalReviews ?? []) : (state?.pendingReviews ?? []);
+    return scanId ? all.filter((item) => item.scanId === scanId) : all;
+  }, [state, scanId]);
   const active = items.find((item) => item.id === selected) ?? items[0];
 
   async function decide(item: ReviewItem, action: 'approve' | 'reject') {
@@ -43,12 +49,35 @@ export function ReviewApp() {
     }
   }
 
+  async function approveAll() {
+    setBatchBusy(true);
+    setError('');
+    try {
+      const response = await sendMessage({ type: 'scan:approve-all', ...(scanId ? { scanId } : {}) });
+      const result = unwrapResponse<{ approved: true; count: number }>(response);
+      setNotice(`已处理 ${result.count} 条有效建议。`);
+      await refresh();
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally { setBatchBusy(false); }
+  }
+
+  async function undoHistorical() {
+    setBatchBusy(true);
+    try {
+      unwrapResponse(await sendMessage({ type: 'undo:historical-last' }));
+      setNotice('已撤销最近历史批量整理。');
+      await refresh();
+    } catch (reason) { setError(messageOf(reason)); }
+    finally { setBatchBusy(false); }
+  }
+
   return <main className="mx-auto max-w-5xl space-y-6 px-5 py-8 sm:px-8">
     <header>
       <a href={chrome.runtime.getURL('/popup.html')} className="text-xs font-medium text-violet-700 dark:text-violet-300">← 返回书签管理</a>
       <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
         <div><h1 className="text-2xl font-semibold tracking-tight">待确认的整理</h1><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">确认后才会创建新目录或移动低置信度书签。</p></div>
-        <Badge>{items.length} 条待处理</Badge>
+        <div className="flex items-center gap-2"><Badge>{items.filter((item) => item.status === 'pending').length} 条待处理</Badge>{items.some((item) => item.scanId && item.status === 'pending') && <Button size="sm" disabled={batchBusy} onClick={() => void approveAll()}>{batchBusy ? '处理中…' : '批准当前全部'}</Button>}{state?.historicalUndoAvailable && <Button size="sm" variant="secondary" disabled={batchBusy} onClick={() => void undoHistorical()}>撤销批量整理</Button>}</div>
       </div>
     </header>
     {notice && <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200">{notice}</p>}
@@ -88,11 +117,16 @@ function ReviewDetail({ item, busy, onApprove, onReject }: {
       <div className="rounded-2xl bg-slate-50 p-4 dark:bg-slate-950"><p className="text-xs font-medium text-slate-500">推荐操作</p><p className="mt-1 text-sm font-semibold">{recommendation}</p><p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">{item.classification.reason}</p></div>
       <p className="text-xs leading-5 text-slate-500">只有点击确认后才会执行目录创建或移动。拒绝后书签保持当前所在位置。</p>
       <div className="flex flex-wrap gap-2">
-        {item.classification.action !== 'keep' && <Button disabled={busy} onClick={onApprove}>{busy ? '正在处理…' : item.classification.action === 'suggest_folder' ? '创建文件夹并归档' : '移动到推荐文件夹'}</Button>}
-        <Button variant="secondary" disabled={busy} onClick={onReject}>保留原位</Button>
+        {item.status !== 'pending' && <Badge className="bg-slate-100 text-slate-600">{reviewStatusLabel(item.status)}</Badge>}
+        {item.status === 'pending' && item.classification.action !== 'keep' && <Button disabled={busy} onClick={onApprove}>{busy ? '正在处理…' : item.classification.action === 'suggest_folder' ? '创建文件夹并归档' : '移动到推荐文件夹'}</Button>}
+        {item.status === 'pending' && <Button variant="secondary" disabled={busy} onClick={onReject}>保留原位</Button>}
       </div>
     </CardContent>
   </Card>;
+}
+
+function reviewStatusLabel(status: ReviewItem['status']): string {
+  return { pending: '待确认', approving: '处理中', approved: '已批准', rejected: '已拒绝', stale: '已过期' }[status];
 }
 
 function safeHostname(value: string): string {

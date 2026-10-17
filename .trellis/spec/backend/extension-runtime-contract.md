@@ -156,3 +156,79 @@ const result = ClassificationResultSchema.parse(extractText(payload, config.prot
 ```
 
 Dispatch endpoint, headers, body, and extraction together by the saved protocol, then validate the shared result contract before the organizer can use it.
+
+## Scenario: Historical scan and batch review workflow
+
+### 1. Scope / Trigger
+
+Use this contract when adding or changing the explicit scan of existing bookmarks, historical review items, batch approval, or historical batch undo. The worker remains the sole owner of scan persistence and Chrome bookmark mutations.
+
+### 2. Signatures
+
+- `enumerateHistoricalBookmarks(tree: BookmarkNode[], forceOrganize: boolean): HistoricalBookmarkCandidate[]`.
+- `OrganizerService.startHistoricalScan(): Promise<{ scanId: string; eligibleTotal: number }>`.
+- `OrganizerService.approveAllHistoricalReviews(scanId?: string): Promise<number>`.
+- `OrganizerService.undoHistoricalLast(): Promise<number>`.
+- `HistoricalScanState`: `{ id, status, startedAt, updatedAt, eligibleTotal, processedCount, pendingReviewCount, failedCount, skippedCount, coveredIds, forceOrganize }`.
+- Historical `BookmarkJob` and `ReviewItem` records carry optional `scanId`; `DashboardState` exposes only the scan summary, never `coveredIds` or `forceOrganize`.
+
+### 3. Contracts
+
+- A scan is explicit and preview-only. It never moves a bookmark or creates a folder during classification.
+- Enumeration accepts HTTP(S) bookmark nodes under editable built-in roots. Without force mode, only direct children of those roots qualify; force mode includes descendants while still excluding managed branches. Folders and unsupported URL schemes are skipped.
+- Scan jobs persist before classification and reuse the existing classifier, cache, folder-target validation, review creation, pending move intent, and worker recovery paths.
+- Historical `move` and `suggest_folder` results always become pending reviews, independent of normal automatic mode or confidence threshold. `keep` completes without mutation.
+- `scan:approve-all` processes a snapshot sequentially through the same live source/target checks as per-item approval. Stale, deleted, or failed items do not abort other items. An instance lock rejects a concurrent batch request.
+- Historical successful moves append to the latest batch undo record. `undo:historical-last` revalidates every recorded bookmark and moves back only items still in the recorded destination; it never deletes empty folders or overwrites manual moves.
+- Missing scan fields in existing version-1 local state normalize to empty/undefined values. API keys and provider payloads never enter scan state, dashboard data, activity messages, or diagnostics.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| A second scan starts while status is `scanning` or `awaiting_review` | Reject without replacing the active scan |
+| A scan request arrives concurrently with another start | Reject through the in-memory start lock |
+| No API key or provider origin permission | Persist waiting jobs; leave bookmarks in place; resume after settings/permission recovery |
+| AI returns `move` or `suggest_folder` | Persist a pending review; do not mutate during scan |
+| Bookmark moved/deleted before approval | Mark review/job stale or skipped; do not overwrite the live placement |
+| Batch approval request repeats or overlaps another batch | Reject concurrent request; never perform a second move for an approved review |
+| Chrome move rejects or worker shuts down around a move | Reconcile `pendingOperation` against the live parent before clearing or retrying |
+| Historical undo sees a deleted/manual-moved bookmark or missing source folder | Record a bounded skip activity and continue remaining items |
+
+### 5. Good / Base / Bad Cases
+
+- **Good**: A direct child of `bookmarks-bar` is classified, shown in Review, approved once, moved after fresh checks, and recorded in the latest batch undo list.
+- **Base**: A scan finds nested user-folder bookmarks with force mode off; it skips them and reports the skipped count without calling the provider.
+- **Bad**: A provider suggests a managed/nonexistent destination or a user moves the bookmark before approval; the scan leaves the bookmark untouched and exposes a stale/failure status.
+
+### 6. Tests Required
+
+- Enumeration: direct-root protection, force descendants, managed branches, HTTP(S) filtering, folders, and duplicate IDs.
+- Persistence: valid historical scan/undo normalization and safe loading of legacy state without these fields.
+- Service: preview-only classification, scan start idempotency/concurrency, worker restart recovery, missing key/permission waiting, stale/manual move handling, batch approval isolation, and batch undo skips.
+- Runtime/UI boundary: Zod rejects unknown or malformed scan messages; dashboard omits covered IDs, force flags, API keys, and provider payloads.
+- Mutation assertions: no `move`/`create` during scan; at most one move per approved bookmark; pending intents reconcile after rejected Chrome calls.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+for (const bookmark of await bookmarks.getTree()) {
+  const result = await classifier.classify(bookmark);
+  if (result.action === 'move') await bookmarks.moveBookmark(bookmark.id, result.targetFolderId);
+}
+```
+
+This bypasses the protection boundary, preview requirement, durable scan job, live-state checks, and recovery intent.
+
+#### Correct
+
+```ts
+const candidates = enumerateHistoricalBookmarks(tree, settings.forceOrganize);
+await store.update((state) => persistScanJobs(state, candidates, scanId));
+await classifyHistoricalJobs(scanId); // move/suggest_folder -> durable pending review
+await organizer.approveAllHistoricalReviews(scanId); // sequential live checks and intents
+```
+
+Separate enumeration/classification from mutation, persist before work, and route every approved move through the existing organizer recovery contract.
