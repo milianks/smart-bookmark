@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/extension-runtime-contract.md","reason":"约束 Organizer 拆分后的服务边界、runtime contract、pending intent、历史扫描和书签变更安全性。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"约束重构期间 PersistedState 保持不变、所有写入仍经过 StateRepository。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"约束无行为漂移、依赖方向、DI ports、测试和错误安全。"}
+{"file":".trellis/spec/frontend/extension-ui-contract.md","reason":"约束 background/UI 消息边界和 Popup/Review 行为不变。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"重构跨 entrypoints/services/lib/types 时检查数据流和契约边界。"}

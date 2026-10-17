@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/extension-runtime-contract.md","reason":"检查拆分后所有服务是否继续遵守后台独占书签变更、幂等、恢复和历史扫描契约。"}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"检查重构是否绕过 StateRepository 或改变本地状态格式。"}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"检查依赖方向、秘密隔离、测试覆盖和无行为漂移。"}
+{"file":".trellis/spec/frontend/extension-ui-contract.md","reason":"检查 runtime message 和 UI 状态投影是否保持兼容。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查抽取共享日志/步骤时是否产生重复抽象或跨层耦合。"}
