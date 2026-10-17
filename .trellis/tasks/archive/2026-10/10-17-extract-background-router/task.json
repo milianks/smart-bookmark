@@ -1,0 +1,30 @@
+{
+  "id": "extract-background-router",
+  "name": "extract-background-router",
+  "title": "分离 Background 消息路由",
+  "description": "把 runtime schema 与请求路由从 background 装配入口分离，保持运行时契约。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "yuanjiang",
+  "assignee": "yuanjiang",
+  "createdAt": "2026-10-17",
+  "completedAt": "2026-10-17",
+  "branch": "refactor/bookmark-architecture",
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-17-bookmark-architecture-refactor",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "codeCommit": "048945f",
+    "rollbackPoint": "048945f",
+    "verification": "pnpm typecheck passed; pnpm test --run: 82 passed; pnpm build passed; git diff --check passed; Chromium runtime smoke: malformed extra-field rejected, draft set/get worked, scan:start worked, dashboard omitted API key"
+  }
+}

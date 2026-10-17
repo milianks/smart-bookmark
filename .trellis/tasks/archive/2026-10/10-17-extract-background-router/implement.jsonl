@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Preserve strict runtime validation and synchronous MV3 listener registration."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Keep messages validated and secrets absent from logs and public response data."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Place routing under the existing background entrypoint boundary."}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "Preserve the UI-to-background message and response contract."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Trace message parsing, dispatch, and response flow across layers."}

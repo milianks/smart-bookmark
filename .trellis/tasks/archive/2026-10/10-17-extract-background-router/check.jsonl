@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Verify strict schema validation, error behavior, and listener timing."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check secret handling and that routing does not bypass service boundaries."}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "Verify every existing runtime message remains compatible."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review runtime data flow and error-envelope compatibility."}
