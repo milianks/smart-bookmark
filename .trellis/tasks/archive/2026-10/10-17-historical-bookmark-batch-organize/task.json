@@ -1,0 +1,28 @@
+{
+  "id": "historical-bookmark-batch-organize",
+  "name": "historical-bookmark-batch-organize",
+  "title": "历史书签扫描与批量整理",
+  "description": "为已有 Chrome 书签提供可预览、可确认、可撤销的批量分类整理能力。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "yuanjiang",
+  "assignee": "yuanjiang",
+  "createdAt": "2026-10-17",
+  "completedAt": "2026-10-17",
+  "branch": "feat/historical-bookmark-batch-organize",
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "priority": "P1"
+  }
+}

@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/extension-runtime-contract.md","reason":"Review scan restart recovery, stale-item behavior, duplicate protection, and batch undo against the existing runtime contract."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review all new paths for secret exposure, unsafe AI destinations, bypassed mutation boundaries, and missing failure tests."}
+{"file":".trellis/spec/backend/logging-guidelines.md","reason":"Review scan activity messages and diagnostics for bounded, user-safe output without provider payloads or secrets."}
+{"file":".trellis/spec/frontend/extension-ui-contract.md","reason":"Review dashboard data shape, runtime message usage, loading/error semantics, and page navigation compatibility."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Review batch controls for typed messages, accessible status/error states, and no direct storage/bookmark access."}

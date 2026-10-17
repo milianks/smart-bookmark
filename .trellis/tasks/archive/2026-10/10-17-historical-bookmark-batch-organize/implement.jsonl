@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/extension-runtime-contract.md","reason":"Preserve MV3 message validation, durable job/review state, live bookmark checks, pending mutation recovery, and background-only bookmark mutation."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Define backward-compatible chrome.storage.local normalization and StateRepository usage for new scan fields."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Enforce provider safety, strict runtime boundaries, idempotency, and service-level test patterns."}
+{"file":".trellis/spec/frontend/extension-ui-contract.md","reason":"Keep popup/review state and actions behind typed runtime messages and preserve existing page boundaries."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Reuse typed React components, native controls, shared primitives, and safe text rendering for batch UI."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Keep durable scan state in the background and transient progress/selection state in page components."}
