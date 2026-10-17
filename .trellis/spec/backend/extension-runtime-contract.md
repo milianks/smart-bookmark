@@ -18,10 +18,12 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 - `OrganizerService.rejectReview(id): Promise<void>`
 - `OrganizerService.undoLastMove(): Promise<string>`
 - `StateRepository.load(): Promise<PersistedState>` and `update(mutator): Promise<PersistedState>`
+- `RequestSchema` is a strict Zod discriminated union; `handleRequest(request: RuntimeRequest, services: RouterServices): Promise<unknown>` receives Organizer, Scan, and Settings facades plus `normalizeBaseUrl(baseUrl)`. The router has no Chrome, storage, or bookmark dependency.
 
 ### 3. Contracts
 
-- Runtime requests are a discriminated union: `state:get`, `settings:update`, `settings-draft:get`, `settings-draft:set`, `settings-draft:clear`, `provider:test`, `review:approve`, `review:reject`, and `undo:last`. Validate incoming messages with Zod before dispatch; settings drafts are persisted locally through the same repository.
+- The background validates with `RequestSchema` before dispatching to `handleRequest`; the router calls only injected service facades and preserves the existing success/error envelope at the listener boundary.
+  For `settings:update`, normalize a shallow copy of `request.settings` so the parsed request is not mutated; return no API key or provider payload.
 - Classification input contains one new bookmark's title, URL, domain, current folder ID/path, and folder `{id, name, path}` summaries. Never send the full bookmark tree or page content to the provider.
 - Classification output is strict Zod data: `move` requires `targetFolderId`; `suggest_folder` requires a name and `parentId`; `keep` has no destination; confidence is in `[0,1]`.
 - Persist jobs, review items, settings and settings drafts, cache, activity history, import marker, undo record, and pending mutation intent through `chrome.storage.local`. Keep API keys out of sync storage, logs, errors, and notifications.
@@ -206,6 +208,7 @@ Use this contract when adding or changing the explicit scan of existing bookmark
 - Enumeration: direct-root protection, force descendants, managed branches, HTTP(S) filtering, folders, and duplicate IDs.
 - Persistence: valid historical scan/undo normalization and safe loading of legacy state without these fields.
 - Service: preview-only classification, scan start idempotency/concurrency, worker restart recovery, missing key/permission waiting, stale/manual move handling, batch approval isolation, and batch undo skips.
+- Router tests must cover strict rejection of malformed/extra-field requests, every RuntimeRequest route and facade argument, copy-based URL normalization, API-key isolation, and unchanged error propagation.
 - Runtime/UI boundary: Zod rejects unknown or malformed scan messages; dashboard omits covered IDs, force flags, API keys, and provider payloads.
 - Mutation assertions: no `move`/`create` during scan; at most one move per approved bookmark; pending intents reconcile after rejected Chrome calls.
 

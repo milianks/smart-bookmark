@@ -1,6 +1,6 @@
 import { defineBackground } from '#imports';
-import { z } from 'zod';
 import { originPermissionPattern, normalizeBaseUrl } from '../lib/ai/provider-config';
+import { RequestSchema, handleRequest } from './background/router';
 import { OpenAICompatibleProvider } from '../lib/ai/openai-compatible';
 import { ChromeStateRepository } from '../lib/storage/repository';
 import { ChromeBookmarkService } from '../services/bookmark.service';
@@ -9,36 +9,6 @@ import { ChromeNotificationService } from '../services/notification.service';
 import { OrganizerService } from '../services/organizer.service';
 import { ScanService } from '../services/scan.service';
 import { SettingsService } from '../services/settings.service';
-import { ProviderProtocolSchema, SettingsDraftSchema } from '../types/domain';
-import type { RuntimeRequest } from '../types/messages';
-
-const SettingsPatchSchema = z.object({
-  enabled: z.boolean().optional(),
-  protocol: ProviderProtocolSchema.optional(),
-  baseUrl: z.string().min(1).max(2_000).optional(),
-  model: z.string().trim().min(1).max(200).optional(),
-  confidenceThreshold: z.number().min(0.5).max(1).optional(),
-  mode: z.enum(['automatic', 'confirm']).optional(),
-  forceOrganize: z.boolean().optional(),
-  notificationsEnabled: z.boolean().optional(),
-  successNotifications: z.boolean().optional(),
-  apiKey: z.string().max(4_000).optional(),
-}).strict();
-
-const RequestSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('state:get') }).strict(),
-  z.object({ type: z.literal('settings:update'), settings: SettingsPatchSchema }).strict(),
-  z.object({ type: z.literal('provider:test') }).strict(),
-  z.object({ type: z.literal('settings-draft:get') }).strict(),
-  z.object({ type: z.literal('settings-draft:set'), draft: SettingsDraftSchema }).strict(),
-  z.object({ type: z.literal('settings-draft:clear') }).strict(),
-  z.object({ type: z.literal('review:approve'), id: z.string().min(1) }).strict(),
-  z.object({ type: z.literal('review:reject'), id: z.string().min(1) }).strict(),
-  z.object({ type: z.literal('undo:last') }).strict(),
-  z.object({ type: z.literal('scan:start') }).strict(),
-  z.object({ type: z.literal('scan:approve-all'), scanId: z.string().min(1).optional() }).strict(),
-  z.object({ type: z.literal('undo:historical-last') }).strict(),
-]);
 
 export default defineBackground(() => {
   const store = new ChromeStateRepository();
@@ -109,7 +79,7 @@ export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const parsed = RequestSchema.safeParse(message);
     if (!parsed.success) return false;
-    void handleRequest(parsed.data, organizer, scan, settings)
+    void handleRequest(parsed.data, { organizer, scan, settings, normalizeBaseUrl })
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error: unknown) => sendResponse({
         ok: false,
@@ -122,38 +92,6 @@ export default defineBackground(() => {
   void chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
   void organizer.resume().catch((error: unknown) => reportBackgroundError(error));
 });
-
-async function handleRequest(request: RuntimeRequest, organizer: OrganizerService, scan: ScanService, settings: SettingsService): Promise<unknown> {
-  switch (request.type) {
-    case 'state:get': return organizer.getDashboardState();
-    case 'settings:update': {
-      const patch = request.settings;
-      if (patch.baseUrl !== undefined) patch.baseUrl = normalizeBaseUrl(patch.baseUrl);
-      await settings.updateSettings(patch);
-      return { saved: true };
-    }
-    case 'provider:test':
-      await settings.testProvider();
-      return { connected: true, model: (await organizer.getDashboardState()).settings.model };
-    case 'settings-draft:get': return { draft: await settings.getSettingsDraft() };
-    case 'settings-draft:set':
-      await settings.updateSettingsDraft(request.draft);
-      return { saved: true };
-    case 'settings-draft:clear':
-      await settings.clearSettingsDraft();
-      return { saved: true };
-    case 'review:approve':
-      await organizer.approveReview(request.id);
-      return { approved: true };
-    case 'review:reject':
-      await organizer.rejectReview(request.id);
-      return { rejected: true };
-    case 'undo:last': return { undone: true, title: await organizer.undoLastMove() };
-    case 'scan:start': return { started: true, ...(await scan.startHistoricalScan()) };
-    case 'scan:approve-all': return { approved: true, count: await scan.approveAllHistoricalReviews(request.scanId) };
-    case 'undo:historical-last': return { undone: true, count: await organizer.undoHistoricalLast() };
-  }
-}
 
 function reportBackgroundError(error: unknown): void {
   // Never log request bodies, URLs, API keys, or provider response payloads.
