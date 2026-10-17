@@ -175,3 +175,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 8: 完成 P1 历史书签扫描与批量整理
+<!-- trellis-session: v=2 fp=4fb964fd245e94be -->
+
+**Date**: 2026-10-17
+**Task**: 完成 P1 历史书签扫描与批量整理
+**Branch**: `feat/historical-bookmark-batch-organize`
+
+### Summary
+
+实现历史书签扫描保护边界、强制预览、持久化进度、逐条与批量审批、Worker 恢复、历史批量撤销及 Popup/Review UI；补充状态归一化、并发、恢复和 stale 测试。pnpm typecheck、pnpm test --run（72 项）、pnpm build、git diff --check 全部通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `606d973` | feat(scan): add historical bookmark batch organization |
+
+### Status
+
+[OK] **Completed**
