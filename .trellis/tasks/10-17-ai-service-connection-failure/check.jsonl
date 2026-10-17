@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Verify tests stay stubbed, bounded, and leave bookmark/settings behavior unchanged."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Review error redaction, status fallback, and failure propagation contracts."}
