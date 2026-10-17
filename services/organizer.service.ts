@@ -1,4 +1,4 @@
-import { appendActivity } from './activity-log';
+import { appendActivity, pruneJobs } from './activity-log';
 import { historicalScanSummary, refreshHistoricalScan } from './scan-state';
 import { ProviderError } from '../lib/ai/openai-compatible';
 import { PermissionRequiredError, type ClassifierPort } from './classifier.service';
@@ -13,7 +13,6 @@ import type {
   DashboardState,
   FolderSummary,
   PendingOperation,
-  PersistedState,
   ReviewItem,
   Settings,
 } from '../types/domain';
@@ -253,118 +252,140 @@ export class OrganizerService {
   async approveReview(id: string): Promise<void> {
     await this.withMutationLock(async () => {
       await this.reconcilePendingOperation();
-      let state = await this.deps.store.load();
-      let item = state.reviews[id];
-      if (!item) throw new Error('这条建议不存在或已过期。');
-      if (item.status === 'approved') return;
-      if (item.status === 'rejected' || item.status === 'stale') throw new Error('这条建议已关闭。');
-      const bookmark = await this.deps.bookmarks.getBookmark(item.bookmarkId);
-      if (!bookmark || bookmark.parentId !== item.sourceParentId) {
-        await this.markReviewStale(item, '书签已被删除或手动移动，未执行建议。');
-        throw new Error('书签位置已变化，建议已标记为过期。');
-      }
-
-      await this.deps.store.update((current) => {
-        const review = current.reviews[id];
-        if (review) review.status = 'approving';
-      });
-      state = await this.deps.store.load();
-      item = state.reviews[id];
-      if (!item) throw new Error('建议状态已变化。');
-
-      let targetFolderId: string;
-      let targetName: string;
-      if (item.classification.action === 'suggest_folder') {
-        const { name, parentId } = item.classification.suggestedFolder;
-        const parent = await this.deps.bookmarks.getFolder(parentId);
-        if (!parent || parent.unmodifiable === 'managed') {
-          await this.markReviewStale(item, '建议的新目录上级已不存在或不可修改。');
-          throw new Error('建议的新目录上级已不存在或不可修改。');
-        }
-        targetName = name.trim().slice(0, 64);
-        const tree = await this.deps.bookmarks.getTree();
-        const parentNode = findNode(tree, parentId);
-        const existing = parentNode?.children?.find((child) => !child.url
-          && child.title.trim().toLocaleLowerCase() === targetName.toLocaleLowerCase());
-        const target = item.targetFolderId
-          ? await this.deps.bookmarks.getFolder(item.targetFolderId)
-          : existing ?? await this.deps.bookmarks.createFolder(targetName, parentId);
-        if (!target || target.unmodifiable === 'managed') throw new Error('无法创建或找到建议文件夹。');
-        targetFolderId = target.id;
-        await this.deps.store.update((current) => {
-          const review = current.reviews[id];
-          if (review) {
-            review.targetFolderId = targetFolderId;
-            review.status = 'approving';
-          }
-        });
-      } else if (item.classification.action === 'move') {
-        targetFolderId = item.classification.targetFolderId;
-        const target = await this.deps.bookmarks.getFolder(targetFolderId);
-        if (!target || target.unmodifiable === 'managed') {
-          await this.markReviewStale(item, '推荐文件夹已不存在或不可修改。');
-          throw new Error('推荐文件夹已不存在或不可修改。');
-        }
-        targetName = target.title;
-      } else {
-        await this.closeReview(item, 'approved', '用户确认保留原位。', 'kept');
-        if (item.scanId) await this.refreshHistoricalScan(item.scanId);
-        return;
-      }
-
-      const latestBookmark = await this.deps.bookmarks.getBookmark(item.bookmarkId);
-      if (!latestBookmark || latestBookmark.parentId !== item.sourceParentId) {
-        await this.markReviewStale(item, '书签位置在确认过程中发生变化，未执行移动。');
-        throw new Error('书签位置发生变化，未执行移动。');
-      }
-      if (targetFolderId === item.sourceParentId) {
-        await this.closeReview(item, 'approved', '书签已位于推荐文件夹，无需移动。', 'review_approved');
-        if (item.scanId) await this.refreshHistoricalScan(item.scanId);
-        return;
-      }
-
-      const operation: PendingOperation = {
-        bookmarkId: item.bookmarkId,
-        title: item.title,
-        fromFolderId: item.sourceParentId,
-        toFolderId: targetFolderId,
-        movedAt: this.now(),
-        operationId: this.makeId('op'),
-        state: 'prepared',
-        kind: 'review',
-        reviewId: id,
-        ...(item.scanId ? { scanId: item.scanId } : {}),
-      };
-      await this.deps.store.update((current) => { current.pendingOperation = operation; });
+      const item = await this.loadReviewForApproval(id);
+      if (!item) return;
+      const target = await this.resolveReviewTarget(item);
+      if (!target) return;
+      if (!(await this.revalidateReviewBeforeMove(item, target.folderId))) return;
+      const operation = await this.prepareReviewMove(item, id, target.folderId);
       if (await this.moveWithRecovery(operation)) return;
-      await this.deps.store.update((current) => {
-        const review = current.reviews[id];
-        if (review) review.status = 'approved';
-        const job = current.jobs[item.bookmarkId];
-        if (job) job.status = 'completed';
-        current.pendingOperation = undefined;
-        if (item.scanId) {
-          const previous = current.lastHistoricalUndo?.scanId === item.scanId
-            ? current.lastHistoricalUndo
-            : { scanId: item.scanId, moved: [], createdAt: this.now() };
-          previous.moved.push({
-            bookmarkId: operation.bookmarkId,
-            title: operation.title,
-            fromFolderId: operation.fromFolderId,
-            toFolderId: operation.toFolderId,
-            movedAt: operation.movedAt,
-            operationId: operation.operationId,
-          });
-          current.lastHistoricalUndo = previous;
-        }
-        appendActivity(current, {
-          kind: 'review_approved', bookmarkId: item.bookmarkId, title: item.title, url: item.url,
-          message: `已移动到 ${targetName}。`, source: item.source,
-          fromFolderId: item.sourceParentId, toFolderId: targetFolderId,
-        }, this.now(), this.makeId);
-      });
-      if (item.scanId) await this.refreshHistoricalScan(item.scanId);
+      await this.recordApprovedReview(item, operation, target.name);
     });
+  }
+
+  private async loadReviewForApproval(id: string): Promise<ReviewItem | null> {
+    const item = (await this.deps.store.load()).reviews[id];
+    if (!item) throw new Error('这条建议不存在或已过期。');
+    if (item.status === 'approved') return null;
+    if (item.status === 'rejected' || item.status === 'stale') throw new Error('这条建议已关闭。');
+    const bookmark = await this.deps.bookmarks.getBookmark(item.bookmarkId);
+    if (!bookmark || bookmark.parentId !== item.sourceParentId) {
+      await this.markReviewStale(item, '书签已被删除或手动移动，未执行建议。');
+      throw new Error('书签位置已变化，建议已标记为过期。');
+    }
+    await this.deps.store.update((current) => {
+      const review = current.reviews[id];
+      if (review) review.status = 'approving';
+    });
+    const approvingItem = (await this.deps.store.load()).reviews[id];
+    if (!approvingItem) throw new Error('建议状态已变化。');
+    return approvingItem;
+  }
+
+  private async resolveReviewTarget(item: ReviewItem): Promise<{ folderId: string; name: string } | null> {
+    if (item.classification.action === 'suggest_folder') {
+      const { name, parentId } = item.classification.suggestedFolder;
+      const parent = await this.deps.bookmarks.getFolder(parentId);
+      if (!parent || parent.unmodifiable === 'managed') {
+        await this.markReviewStale(item, '建议的新目录上级已不存在或不可修改。');
+        throw new Error('建议的新目录上级已不存在或不可修改。');
+      }
+      const targetName = name.trim().slice(0, 64);
+      const tree = await this.deps.bookmarks.getTree();
+      const parentNode = findNode(tree, parentId);
+      const existing = parentNode?.children?.find((child) => !child.url
+        && child.title.trim().toLocaleLowerCase() === targetName.toLocaleLowerCase());
+      const target = item.targetFolderId
+        ? await this.deps.bookmarks.getFolder(item.targetFolderId)
+        : existing ?? await this.deps.bookmarks.createFolder(targetName, parentId);
+      if (!target || target.unmodifiable === 'managed') throw new Error('无法创建或找到建议文件夹。');
+      await this.deps.store.update((current) => {
+        const review = current.reviews[item.id];
+        if (review) {
+          review.targetFolderId = target.id;
+          review.status = 'approving';
+        }
+      });
+      return { folderId: target.id, name: targetName };
+    }
+    if (item.classification.action === 'move') {
+      const targetFolderId = item.classification.targetFolderId;
+      const target = await this.deps.bookmarks.getFolder(targetFolderId);
+      if (!target || target.unmodifiable === 'managed') {
+        await this.markReviewStale(item, '推荐文件夹已不存在或不可修改。');
+        throw new Error('推荐文件夹已不存在或不可修改。');
+      }
+      return { folderId: targetFolderId, name: target.title };
+    }
+    await this.closeReview(item, 'approved', '用户确认保留原位。', 'kept');
+    if (item.scanId) await this.refreshHistoricalScan(item.scanId);
+    return null;
+  }
+
+  private async revalidateReviewBeforeMove(item: ReviewItem, targetFolderId: string): Promise<boolean> {
+    const latestBookmark = await this.deps.bookmarks.getBookmark(item.bookmarkId);
+    if (!latestBookmark || latestBookmark.parentId !== item.sourceParentId) {
+      await this.markReviewStale(item, '书签位置在确认过程中发生变化，未执行移动。');
+      throw new Error('书签位置发生变化，未执行移动。');
+    }
+    if (targetFolderId === item.sourceParentId) {
+      await this.closeReview(item, 'approved', '书签已位于推荐文件夹，无需移动。', 'review_approved');
+      if (item.scanId) await this.refreshHistoricalScan(item.scanId);
+      return false;
+    }
+    const target = await this.deps.bookmarks.getFolder(targetFolderId);
+    if (!target || target.unmodifiable === 'managed') {
+      await this.markReviewStale(item, '推荐文件夹已不存在或不可修改。');
+      throw new Error('推荐文件夹已不存在或不可修改。');
+    }
+    return true;
+  }
+
+  private async prepareReviewMove(item: ReviewItem, id: string, targetFolderId: string): Promise<PendingOperation> {
+    const operation: PendingOperation = {
+      bookmarkId: item.bookmarkId,
+      title: item.title,
+      fromFolderId: item.sourceParentId,
+      toFolderId: targetFolderId,
+      movedAt: this.now(),
+      operationId: this.makeId('op'),
+      state: 'prepared',
+      kind: 'review',
+      reviewId: id,
+      ...(item.scanId ? { scanId: item.scanId } : {}),
+    };
+    await this.deps.store.update((current) => { current.pendingOperation = operation; });
+    return operation;
+  }
+
+  private async recordApprovedReview(item: ReviewItem, operation: PendingOperation, targetName: string): Promise<void> {
+    await this.deps.store.update((current) => {
+      const review = current.reviews[item.id];
+      if (review) review.status = 'approved';
+      const job = current.jobs[item.bookmarkId];
+      if (job) job.status = 'completed';
+      current.pendingOperation = undefined;
+      if (item.scanId) {
+        const previous = current.lastHistoricalUndo?.scanId === item.scanId
+          ? current.lastHistoricalUndo
+          : { scanId: item.scanId, moved: [], createdAt: this.now() };
+        previous.moved.push({
+          bookmarkId: operation.bookmarkId,
+          title: operation.title,
+          fromFolderId: operation.fromFolderId,
+          toFolderId: operation.toFolderId,
+          movedAt: operation.movedAt,
+          operationId: operation.operationId,
+        });
+        current.lastHistoricalUndo = previous;
+      }
+      appendActivity(current, {
+        kind: 'review_approved', bookmarkId: item.bookmarkId, title: item.title, url: item.url,
+        message: `已移动到 ${targetName}。`, source: item.source,
+        fromFolderId: item.sourceParentId, toFolderId: operation.toFolderId,
+      }, this.now(), this.makeId);
+    });
+    if (item.scanId) await this.refreshHistoricalScan(item.scanId);
   }
 
   async rejectReview(id: string): Promise<void> {
@@ -904,13 +925,4 @@ function findNode(nodes: BookmarkNode[], id: string): BookmarkNode | null {
     if (found) return found;
   }
   return null;
-}
-
-function pruneJobs(state: PersistedState): void {
-  const ids = Object.values(state.jobs)
-    .filter((job) => job.status !== 'pending_review')
-    .sort((a, b) => a.updatedAt - b.updatedAt)
-    .slice(0, Math.max(0, Object.keys(state.jobs).length - 250))
-    .map((job) => job.bookmark.id);
-  for (const id of ids) delete state.jobs[id];
 }

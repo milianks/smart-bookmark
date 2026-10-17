@@ -14,7 +14,7 @@ The backend is the Chrome Manifest V3 extension service worker, not a web server
 entrypoints/
 └── background.ts             # MV3 event listeners and message dispatch
 services/
-├── activity-log.ts            # bounded activity-history append transformations
+├── activity-log.ts            # bounded activity append and job-pruning transformations
 ├── bookmark.service.ts        # Chrome Bookmarks API adapter and port
 ├── classifier.service.ts      # local rules/cache and provider orchestration
 ├── notification.service.ts    # Chrome notifications adapter
@@ -38,7 +38,7 @@ The React extension pages are under `components/` and `entrypoints/{popup,option
 
 - Keep Chrome listener registration and request dispatch in `entrypoints/background.ts`. It constructs adapters and services; it should not become the home for classification or bookmark workflow rules.
 - Put orchestration in the existing services. `OrganizerService` owns persisted jobs, review/mutation workflows, undo, and recovery; `ScanService` coordinates historical scan and batch-approval work through narrow Organizer callbacks; `SettingsService` owns settings, drafts, and provider tests.
-- Keep historical scan state transitions in the pure `scan-state.ts` module and activity append transformations in `activity-log.ts`; both update state only inside `StateRepository.update()` callbacks.
+- Keep historical scan state transitions in the pure `scan-state.ts` module and activity append/job-pruning transformations in `activity-log.ts`; invoke state mutations only inside `StateRepository.update()` callbacks.
 - Keep Chrome API access behind the existing service or repository adapter (`ChromeBookmarkService`, `ChromeNotificationService`, `ChromeStateRepository`). The organizer receives ports so its tests can use fakes.
 - Put provider-specific HTTP and response parsing in `lib/ai/`; keep shared domain and runtime message shapes in `types/`.
 - This project has no server routes, controllers, SQL layer, or ORM. Do not introduce those as if they were established layers.

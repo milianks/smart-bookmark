@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ClassifierPort } from '../services/classifier.service';
 import type { BookmarkNode, BookmarkPort } from '../services/bookmark.service';
+import { pruneJobs } from '../services/activity-log';
 import type { NotificationPort } from '../services/notification.service';
 import { OrganizerService } from '../services/organizer.service';
 import { ScanService } from '../services/scan.service';
@@ -259,5 +260,28 @@ describe('OrganizerService', () => {
     expect(await scan.approveAllHistoricalReviews(scanId)).toBe(0);
     expect((await store.load()).reviews.b1?.status).toBe('stale');
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'other' }]);
+  });
+  it('prunes oldest eligible jobs and protects pending-review jobs', async () => {
+    await store.update((state) => {
+      for (let index = 0; index < 252; index += 1) {
+        const id = `job-${index}`;
+        state.jobs[id] = {
+          bookmark: { id, title: id, url: `https://${id}.example`, parentId: 'bar' },
+          status: index < 2 ? 'pending_review' : 'completed',
+          attempts: 0,
+          createdAt: index,
+          updatedAt: index,
+        };
+      }
+      pruneJobs(state);
+    });
+
+    const jobs = (await store.load()).jobs;
+    expect(jobs['job-0']?.status).toBe('pending_review');
+    expect(jobs['job-1']?.status).toBe('pending_review');
+    expect(jobs['job-2']).toBeUndefined();
+    expect(jobs['job-3']).toBeUndefined();
+    expect(jobs['job-4']).toBeDefined();
+    expect(jobs['job-251']).toBeDefined();
   });
 });
