@@ -1,0 +1,33 @@
+{
+  "id": "bookmark-architecture-refactor",
+  "name": "bookmark-architecture-refactor",
+  "title": "Bookmark 架构重构落地",
+  "description": "按已批准的架构规划分批拆分 Organizer 与 background 路由，保持现有产品行为契约不变。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "yuanjiang",
+  "assignee": "yuanjiang",
+  "createdAt": "2026-10-17",
+  "completedAt": "2026-10-17",
+  "branch": "refactor/bookmark-architecture",
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-17-split-scan-settings",
+    "10-17-extract-activity-log",
+    "10-17-extract-background-router"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "codeCommits": "6d28102,c640aac,048945f",
+    "verification": "Final combined gate: pnpm typecheck; pnpm test --run (82 tests); pnpm build; git diff --check. Chromium smoke: settings draft, scan start, strict malformed rejection, API-key omission, and real review approval."
+  }
+}

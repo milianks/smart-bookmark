@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Source contract for queue recovery, mutation safety, provider permissions, and background message behavior."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Preserve StateRepository ownership and the existing local state format."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Keep service boundaries typed, failure-safe, and covered by meaningful tests."}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "Preserve existing UI-to-background runtime messages and public projections."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Track data flow and compatibility across entrypoints, services, storage, and UI."}

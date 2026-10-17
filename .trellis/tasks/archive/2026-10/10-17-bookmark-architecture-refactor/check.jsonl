@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Check bookmark mutation ownership, restart recovery, and runtime compatibility."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Check no persisted shape or repository boundary drift."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check dependency direction, safe failures, test evidence, and secrets."}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "Check UI-visible message and projection compatibility."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review cross-layer data flow and hidden coupling."}
