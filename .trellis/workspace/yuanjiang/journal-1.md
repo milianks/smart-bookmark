@@ -153,3 +153,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 7: 完成 Popup 设置宽度修复
+<!-- trellis-session: v=2 fp=4264659e8005ff96 -->
+
+**Date**: 2026-10-17
+**Task**: 完成 Popup 设置宽度修复
+**Branch**: `master`
+
+### Summary
+
+将 fix/popup-settings-width-jump 快进合并到 master；复跑 pnpm typecheck、pnpm test --run（57 项）和 pnpm build 均通过；归档 popup-settings-width-jump 任务。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b772d27` | feat(popup): embed settings with draft support and stable width |
+
+### Status
+
+[OK] **Completed**
