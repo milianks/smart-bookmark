@@ -35,6 +35,8 @@ There is no HTTP API server. Runtime requests use the `RuntimeRequest` union in 
 
 `types/messages.ts` provides `unwrapResponse()` for pages; it throws the returned error string so the component can display it. The background currently returns `Error.message` verbatim (or a generic fallback for non-`Error` values), so errors crossing this boundary must already be safe and suitable for display. Provider errors use concise status text, and failures must not cause unsafe bookmark moves.
 
+For non-2xx provider responses, parse only bounded JSON fields needed for explicitly recognized error codes. Map those codes to fixed user-safe messages; never reflect arbitrary provider `message` fields or response bodies. A provider-suggested replacement base URL is display-only: require HTTPS, reject credentials/query/fragment, and pass the existing `normalizeBaseUrl()` validation before including it in an error. Never follow the suggested URL or update saved settings automatically. Preserve current status-based fallback and retryability for unrecognized errors.
+
 ## Common Mistakes
 
 - Do not trust an AI response merely because JSON parsing succeeded; require strict Zod validation and current-folder ID validation.

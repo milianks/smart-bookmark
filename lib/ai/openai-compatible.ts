@@ -1,6 +1,6 @@
 import { ClassificationResultSchema, type ClassificationResult, type FolderSummary } from '../../types/domain';
 import { buildClassificationMessages, type ClassificationInput } from './prompts';
-import { providerUrl, type ProviderConfig } from './provider-config';
+import { normalizeBaseUrl, providerUrl, type ProviderConfig } from './provider-config';
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_CLASSIFICATION_TEXT_LENGTH = 16_000;
@@ -23,7 +23,7 @@ export interface ClassifierProvider {
  * non-streaming JSON APIs to the same prompt and strict result schema.
  */
 export class OpenAICompatibleProvider implements ClassifierProvider {
-  constructor(private readonly fetcher: typeof fetch = fetch) {}
+  constructor(private readonly fetcher: typeof fetch = fetch.bind(globalThis)) {}
 
   async classify(
     input: ClassificationInput,
@@ -84,9 +84,14 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
       const text = await readLimitedText(response, MAX_RESPONSE_BYTES);
       if (!response.ok) {
         const retryable = response.status === 429 || response.status >= 500;
+        const providerError = parseProviderError(text);
         const statusText = response.status === 401 || response.status === 403
           ? 'API Key 或服务权限无效'
-          : `AI 服务返回错误 (${response.status})`;
+          : providerError?.code === 'ENDPOINT_MIGRATED'
+            ? migrationMessage(providerError.newBaseUrl)
+            : providerError?.code === 'model_not_found'
+              ? '当前模型不存在，请检查模型名称并选择服务支持的模型'
+              : `AI 服务返回错误 (${response.status})`;
         throw new ProviderError(statusText, retryable);
       }
       let json: unknown;
@@ -106,6 +111,48 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+interface RecognizedProviderError {
+  code?: string;
+  newBaseUrl?: string;
+}
+
+function parseProviderError(text: string): RecognizedProviderError | undefined {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text) as unknown;
+  } catch {
+    return undefined;
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+
+  const root = payload as Record<string, unknown>;
+  const error = root.error && typeof root.error === 'object' && !Array.isArray(root.error)
+    ? root.error as Record<string, unknown>
+    : root;
+  return {
+    code: typeof error.code === 'string' ? error.code : undefined,
+    newBaseUrl: typeof error.new_base_url === 'string' ? error.new_base_url : undefined,
+  };
+}
+
+function migrationMessage(rawBaseUrl?: string): string {
+  const safeBaseUrl = validateMigrationBaseUrl(rawBaseUrl);
+  return safeBaseUrl
+    ? `AI 服务地址已迁移，请将 API 地址改为 ${safeBaseUrl} 后重新测试；书签已保留原位`
+    : 'AI 服务地址已迁移，请联系服务提供方确认新的 API 地址后重试；书签已保留原位';
+}
+
+function validateMigrationBaseUrl(rawBaseUrl?: string): string | undefined {
+  if (!rawBaseUrl) return undefined;
+  try {
+    const url = new URL(rawBaseUrl);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) return undefined;
+    return normalizeBaseUrl(rawBaseUrl);
+  } catch {
+    return undefined;
   }
 }
 

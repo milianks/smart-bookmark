@@ -167,6 +167,80 @@ describe('OpenAICompatibleProvider', () => {
     });
   });
 
+  it('服务端声明 endpoint 已迁移时仅显示经过校验的 HTTPS 地址，不自动请求新地址', async () => {
+    const migrationUrl = 'https://api.example.test/v1';
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      error: {
+        code: 'ENDPOINT_MIGRATED',
+        new_base_url: migrationUrl,
+        message: 'private response containing test-key',
+      },
+    }), { status: 503 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    const error = await provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' })
+      .catch((value: unknown) => value);
+
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[0]).toBe('https://aiaaa.cc/v1/chat/completions');
+    expect(error).toMatchObject({
+      name: 'ProviderError',
+      message: `AI 服务地址已迁移，请将 API 地址改为 ${migrationUrl} 后重新测试；书签已保留原位`,
+      retryable: true,
+    });
+    expect((error as Error).message).not.toContain('test-key');
+    expect((error as Error).message).not.toContain('private response');
+  });
+
+  it.each([
+    'http://api.example.test/v1',
+    'https://user:password@api.example.test/v1',
+    'https://api.example.test/v1?token=private',
+    'https://api.example.test/v1#private',
+    undefined,
+  ])('迁移地址 %s 不安全或缺失时只提示联系服务提供方', async (migrationUrl) => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      code: 'ENDPOINT_MIGRATED',
+      new_base_url: migrationUrl,
+      message: 'private response containing test-key',
+    }), { status: 503 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    const error = await provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' })
+      .catch((value: unknown) => value);
+
+    expect(error).toMatchObject({
+      name: 'ProviderError',
+      message: 'AI 服务地址已迁移，请联系服务提供方确认新的 API 地址后重试；书签已保留原位',
+      retryable: true,
+    });
+    expect((error as Error).message).not.toContain('private');
+    expect((error as Error).message).not.toContain('test-key');
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it('model_not_found 提示检查模型名称，不透出服务端正文或密钥', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      error: {
+        code: 'model_not_found',
+        message: 'model deepseek-flash does not exist; test-key was included',
+      },
+    }), { status: 404 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    const error = await provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' })
+      .catch((value: unknown) => value);
+
+    expect(error).toMatchObject({
+      name: 'ProviderError',
+      message: '当前模型不存在，请检查模型名称并选择服务支持的模型',
+      retryable: false,
+    });
+    expect((error as Error).message).not.toContain('deepseek-flash');
+    expect((error as Error).message).not.toContain('test-key');
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it.each([429, 500])('HTTP %i 时标记为可重试且不透出服务端正文', async (status) => {
     const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       error: 'provider echoed test-key and private details',
