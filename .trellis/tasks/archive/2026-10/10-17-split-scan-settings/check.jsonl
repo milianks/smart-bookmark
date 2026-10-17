@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Verify queue recovery, historical scan behavior, review validation, and mutation safety."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Verify repository ownership, synchronous mutations, and backward-compatible state."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Check service boundaries, failure behavior, regression coverage, and secret isolation."}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "Verify all existing runtime messages and UI-visible state remain compatible."}

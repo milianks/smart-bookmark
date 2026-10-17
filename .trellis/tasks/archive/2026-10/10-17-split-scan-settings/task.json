@@ -1,0 +1,30 @@
+{
+  "id": "split-scan-settings",
+  "name": "split-scan-settings",
+  "title": "拆分扫描与设置服务",
+  "description": "从 OrganizerService 提取历史扫描与设置职责，保持状态和消息契约。",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P1",
+  "creator": "yuanjiang",
+  "assignee": "yuanjiang",
+  "createdAt": "2026-10-17",
+  "completedAt": "2026-10-17",
+  "branch": "refactor/bookmark-architecture",
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "10-17-bookmark-architecture-refactor",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "codeCommit": "6d28102",
+    "rollbackPoint": "6d28102",
+    "verification": "pnpm typecheck passed; pnpm test --run: 77 passed; pnpm build passed; git diff --check passed; Chromium extension runtime smoke: settings draft set/get and scan:start succeeded (0 eligible)"
+  }
+}

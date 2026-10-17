@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Preserve background ownership, queue recovery, and bookmark-mutation contracts during service extraction."}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Keep all writes on StateRepository and preserve the current persisted shape and normalization."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Preserve strict dependency ports, safe failure behavior, tests, and bookmark mutation ownership."}
+{"file": ".trellis/spec/backend/directory-structure.md", "reason": "Follow the existing services layer and naming conventions when adding modules."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Trace service, background, runtime-message, and UI data flow without changing contracts."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing repository and workflow helpers; avoid duplicating state transformations."}
