@@ -53,6 +53,33 @@ export default defineBackground(() => {
     afterUpdate: () => organizer.resume(),
   });
 
+  let rootInitialization: Promise<void> | undefined;
+  const initializeSmartBookmarkRoot = (): Promise<void> => {
+    if (!rootInitialization) {
+      rootInitialization = (async () => {
+        const state = await store.load();
+        const result = await bookmarks.initializeSmartBookmarkRoot({
+          storedRootId: state.smartBookmarkRootId,
+          initializeDefaults: !state.smartBookmarkInitialized,
+          identity: chrome.identity,
+        });
+        await store.update((next) => {
+          next.smartBookmarkRootId = result.rootId;
+          next.smartBookmarkInitialized = true;
+        });
+      })().finally(() => {
+        rootInitialization = undefined;
+      });
+    }
+    return rootInitialization;
+  };
+
+  const resumeAfterRootInitialization = (): void => {
+    void initializeSmartBookmarkRoot()
+      .catch((error: unknown) => reportBackgroundError(error))
+      .then(() => organizer.resume().catch((error: unknown) => reportBackgroundError(error)));
+  };
+
   // MV3 event listeners must be registered synchronously at worker evaluation time.
   chrome.bookmarks.onCreated.addListener((id, node) => {
     void organizer.onBookmarkCreated(id, node).catch((error: unknown) => reportBackgroundError(error));
@@ -64,12 +91,10 @@ export default defineBackground(() => {
     void organizer.onImportEnded().catch((error: unknown) => reportBackgroundError(error));
   });
   chrome.runtime.onStartup.addListener(() => {
-    void organizer.resume().catch((error: unknown) => reportBackgroundError(error));
+    resumeAfterRootInitialization();
   });
   chrome.runtime.onInstalled.addListener(() => {
-    void store.update(() => undefined)
-      .then(() => organizer.resume())
-      .catch((error: unknown) => reportBackgroundError(error));
+    resumeAfterRootInitialization();
   });
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === 'ai-bookmark-manager.resume') {
@@ -96,7 +121,7 @@ export default defineBackground(() => {
 
   // Reducing accidental exposure to content scripts; secrets stay in extension contexts.
   void chrome.storage.local.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
-  void organizer.resume().catch((error: unknown) => reportBackgroundError(error));
+  resumeAfterRootInitialization();
 });
 
 function reportBackgroundError(error: unknown): void {

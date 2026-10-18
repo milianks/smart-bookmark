@@ -1,0 +1,8 @@
+{"file":".trellis/tasks/10-18-smart-bookmark-root/prd.md","reason":"Final product requirements, privacy boundary, account naming rule, root location, default layout, and acceptance criteria."}
+{"file":".trellis/tasks/10-18-smart-bookmark-root/design.md","reason":"Technical boundaries, initialization data flow, live target validation, historical scan isolation, and compatibility decisions."}
+{"file":".trellis/tasks/10-18-smart-bookmark-root/research/chrome-identity.md","reason":"Chrome Identity API source, permission, returned fields, and fallback behavior for root naming."}
+{"file":".trellis/tasks/10-18-smart-bookmark-root/research/bookmark-layout.md","reason":"Public bookmark organization research supporting the lightweight one-level default layout."}
+{"file":".trellis/spec/backend/extension-runtime-contract.md","reason":"MV3 listener timing, background ownership, durable jobs, live bookmark checks, and mutation recovery."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Backward-compatible chrome.storage.local state normalization and repository-only persistence."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Strict external-data validation, bookmark mutation boundaries, secret isolation, and required tests."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Cross-layer data-flow and contract checks across background, storage, services, provider, and UI."}

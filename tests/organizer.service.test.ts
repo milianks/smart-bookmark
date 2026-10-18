@@ -22,9 +22,10 @@ class FakeBookmarks implements BookmarkPort {
     }] });
     this.nodes.set('bar', this.nodes.get('0')!.children![0]!);
     this.nodes.set('other', this.nodes.get('0')!.children![1]!);
-    this.addFolder('dev', '开发', 'bar');
+    this.addFolder('smart-root', 'yuan 的智能书签', 'bar');
+    this.addFolder('dev', '开发', 'smart-root');
     this.addFolder('nested', '稍后阅读', 'dev');
-    this.addBookmark('b1', 'LangGraph guide', 'https://example.com/langgraph', 'bar');
+    this.addBookmark('b1', 'LangGraph guide', 'https://example.com/langgraph', 'smart-root');
   }
 
   async getTree(): Promise<BookmarkNode[]> { return structuredClone([this.nodes.get('0')!]); }
@@ -47,6 +48,23 @@ class FakeBookmarks implements BookmarkPort {
   async getFolderPath(id: string): Promise<string | null> { return (await this.getFolders()).find((folder) => folder.id === id)?.path ?? null; }
   async folderExists(id: string): Promise<boolean> { return Boolean(await this.getFolder(id)); }
   async isEligibleRoot(id: string): Promise<boolean> { return ['bar', 'other'].includes(id); }
+  async isWithinRoot(nodeId: string, rootId: string): Promise<boolean> {
+    if (rootId !== 'smart-root') return false;
+    if (nodeId === rootId) return true;
+    let current = this.nodes.get(nodeId);
+    while (current?.parentId) {
+      if (current.parentId === rootId) return true;
+      current = this.nodes.get(current.parentId);
+    }
+    return false;
+  }
+  async getFoldersWithinRoot(rootId: string): Promise<FolderSummary[]> {
+    if (rootId !== 'smart-root') return [];
+    return (await this.getFolders()).filter((folder) => folder.id === 'smart-root' || folder.id === 'dev' || folder.id === 'nested' || folder.id.startsWith('folder-'));
+  }
+  async isValidTargetFolder(targetFolderId: string, rootId: string): Promise<boolean> {
+    return (await this.getFoldersWithinRoot(rootId)).some((folder) => folder.id === targetFolderId);
+  }
   async moveBookmark(bookmarkId: string, targetFolderId: string): Promise<void> {
     const bookmark = this.nodes.get(bookmarkId);
     const target = this.nodes.get(targetFolderId);
@@ -90,7 +108,7 @@ describe('OrganizerService', () => {
   beforeEach(async () => {
     bookmarks = new FakeBookmarks();
     store = new MemoryStateRepository();
-    await store.update((state) => { state.settings.apiKey = 'test-key'; });
+    await store.update((state) => { state.settings.apiKey = 'test-key'; state.smartBookmarkRootId = 'smart-root'; state.smartBookmarkInitialized = true; });
     result = { action: 'move', targetFolderId: 'dev', confidence: 0.96, reason: '与开发主题匹配' };
     classifier = { classify: vi.fn(async () => ({ result, source: 'ai' as const })) };
     notifications = {
@@ -111,12 +129,12 @@ describe('OrganizerService', () => {
       state.bookmarkMetadata.b1 = metadata;
       state.bookmarkMetadata.unrelated = { summary: 'Unrelated', tags: ['other'], generatedAt: 11 };
       state.jobs.b1 = {
-        bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'bar' },
+        bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
         status: 'completed', attempts: 1, createdAt: 1, updatedAt: 2,
       };
       state.reviews.review1 = {
         id: 'review1', bookmarkId: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph',
-        sourceParentId: 'bar', classification: result, source: 'ai', createdAt: 3, status: 'pending',
+        sourceParentId: 'smart-root', classification: result, source: 'ai', createdAt: 3, status: 'pending',
       };
     });
 
@@ -131,7 +149,7 @@ describe('OrganizerService', () => {
   it('自动移动高置信度的已有目录建议，并保存撤销记录', async () => {
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);
-    expect((await store.load()).lastUndo).toMatchObject({ bookmarkId: 'b1', fromFolderId: 'bar', toFolderId: 'dev' });
+    expect((await store.load()).lastUndo).toMatchObject({ bookmarkId: 'b1', fromFolderId: 'smart-root', toFolderId: 'dev' });
   });
 
   it('没有合适目录时生成新目录建议，用户确认后才创建并移动', async () => {
@@ -151,7 +169,7 @@ describe('OrganizerService', () => {
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
     await organizer.rejectReview('b1');
     expect(bookmarks.moves).toHaveLength(0);
-    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('bar');
+    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('smart-root');
     expect((await store.load()).reviews['b1']?.status).toBe('rejected');
   });
 
@@ -159,7 +177,7 @@ describe('OrganizerService', () => {
     classifier.classify = vi.fn(async () => { throw new Error('provider unavailable'); });
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
     expect(bookmarks.moves).toHaveLength(0);
-    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('bar');
+    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('smart-root');
     expect((await store.load()).jobs.b1?.status).toBe('failed');
   });
 
@@ -176,7 +194,7 @@ describe('OrganizerService', () => {
     result = { action: 'move', targetFolderId: 'deleted', confidence: 0.99, reason: '旧目录' };
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
     expect(bookmarks.moves).toHaveLength(0);
-    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('bar');
+    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('smart-root');
     expect((await store.load()).jobs.b1?.status).toBe('failed');
   });
 
@@ -192,16 +210,16 @@ describe('OrganizerService', () => {
   it('撤销最近一次自动移动并回到原文件夹', async () => {
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
     await organizer.undoLastMove();
-    expect(bookmarks.moves.at(-1)).toEqual({ id: 'b1', target: 'bar' });
-    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('bar');
+    expect(bookmarks.moves.at(-1)).toEqual({ id: 'b1', target: 'smart-root' });
+    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('smart-root');
     expect((await store.load()).lastUndo).toBeUndefined();
   });
 
   it('默认保留保存到自建文件夹中的书签', async () => {
-    const bookmark = bookmarks.addBookmark('nested-bookmark', 'Article', 'https://example.com/article', 'nested');
+    const bookmark = bookmarks.addBookmark('nested-bookmark', 'Article', 'https://example.com/article', 'other');
     await organizer.onBookmarkCreated(bookmark.id, bookmark);
     expect(classifier.classify).not.toHaveBeenCalled();
-    expect((await bookmarks.getBookmark(bookmark.id))?.parentId).toBe('nested');
+    expect((await bookmarks.getBookmark(bookmark.id))?.parentId).toBe('other');
   });
 
   it('缺少 API Key 时持久化等待状态，配置后恢复处理', async () => {
@@ -235,7 +253,7 @@ describe('OrganizerService', () => {
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);
     expect((await store.load()).lastHistoricalUndo?.moved).toHaveLength(1);
     expect(await organizer.undoHistoricalLast()).toBe(1);
-    expect(bookmarks.moves.at(-1)).toEqual({ id: 'b1', target: 'bar' });
+    expect(bookmarks.moves.at(-1)).toEqual({ id: 'b1', target: 'smart-root' });
   });
 
   it('并发批量批准只允许一个请求执行', async () => {
@@ -259,7 +277,7 @@ describe('OrganizerService', () => {
         failedCount: 0, skippedCount: 0, coveredIds: ['b1'], forceOrganize: false,
       };
       state.jobs.b1 = {
-        bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'bar' },
+        bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
         status: 'queued', attempts: 0, createdAt: 1, updatedAt: 1, scanId: 'scan-restart',
       };
     });
@@ -289,7 +307,7 @@ describe('OrganizerService', () => {
       for (let index = 0; index < 252; index += 1) {
         const id = `job-${index}`;
         state.jobs[id] = {
-          bookmark: { id, title: id, url: `https://${id}.example`, parentId: 'bar' },
+          bookmark: { id, title: id, url: `https://${id}.example`, parentId: 'smart-root' },
           status: index < 2 ? 'pending_review' : 'completed',
           attempts: 0,
           createdAt: index,

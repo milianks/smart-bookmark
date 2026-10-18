@@ -53,10 +53,15 @@ export class ChromeStateRepository implements StateRepository {
 function normalizeState(input: Partial<PersistedState>): PersistedState {
   const defaults = emptyPersistedState();
   const settings = normalizeSettings(input.settings);
+  const smartBookmarkRootId = typeof input.smartBookmarkRootId === 'string' && input.smartBookmarkRootId.trim().length > 0
+    ? input.smartBookmarkRootId.trim()
+    : undefined;
   return {
     ...defaults,
     ...input,
     version: 1,
+    smartBookmarkRootId,
+    smartBookmarkInitialized: input.smartBookmarkInitialized === true && Boolean(smartBookmarkRootId),
     settings,
     jobs: input.jobs && typeof input.jobs === 'object' ? input.jobs : {},
     reviews: input.reviews && typeof input.reviews === 'object' ? input.reviews : {},

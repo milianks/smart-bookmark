@@ -60,6 +60,12 @@ export class OrganizerService {
     if (importActive) return;
     if (state.jobs[id]) return;
 
+    const rootId = state.smartBookmarkRootId;
+    if (!rootId || !this.deps.bookmarks.isWithinRoot
+      || !(await this.isWithinSmartRoot(node.parentId, rootId))) {
+      return;
+    }
+
     const snapshot: BookmarkSnapshot = {
       id,
       title: node.title || '(无标题)',
@@ -74,14 +80,6 @@ export class OrganizerService {
       });
       return;
     }
-    if (!state.settings.forceOrganize && !(await this.deps.bookmarks.isEligibleRoot(node.parentId))) {
-      await this.appendActivity({
-        kind: 'skipped', bookmarkId: id, title: snapshot.title, url: snapshot.url,
-        message: '书签位于自建文件夹中，已尊重当前分类并保留原位。',
-      });
-      return;
-    }
-
     const job: BookmarkJob = {
       bookmark: snapshot,
       status: state.settings.apiKey.trim() ? 'queued' : 'awaiting_configuration',
@@ -117,10 +115,15 @@ export class OrganizerService {
       const state = await this.deps.store.load();
       const record = state.lastHistoricalUndo;
       if (!record || record.moved.length === 0) throw new Error('没有可以撤销的历史批量归档。');
+      const rootId = await this.getSmartRootId();
+      if (!rootId) throw new Error('智能书签目录不可用，无法撤销历史归档。');
       let count = 0;
       for (const move of record.moved) {
         const bookmark = await this.deps.bookmarks.getBookmark(move.bookmarkId);
-        if (!bookmark || bookmark.parentId !== move.toFolderId || !(await this.deps.bookmarks.folderExists(move.fromFolderId))) {
+        if (!bookmark || bookmark.parentId !== move.toFolderId
+          || !(await this.isWithinSmartRoot(bookmark.id, rootId))
+          || !(await this.isValidSmartTarget(move.toFolderId, rootId))
+          || !(await this.isValidSmartTarget(move.fromFolderId, rootId))) {
           await this.appendActivity({
             kind: 'skipped', bookmarkId: move.bookmarkId, title: move.title,
             message: '历史批量撤销跳过：书签已删除、手动移动或原文件夹不存在。',
@@ -272,7 +275,10 @@ export class OrganizerService {
     if (item.status === 'approved') return null;
     if (item.status === 'rejected' || item.status === 'stale') throw new Error('这条建议已关闭。');
     const bookmark = await this.deps.bookmarks.getBookmark(item.bookmarkId);
-    if (!bookmark || bookmark.parentId !== item.sourceParentId) {
+    const rootId = await this.getSmartRootId();
+    if (!rootId || !bookmark || bookmark.parentId !== item.sourceParentId
+      || !(await this.isWithinSmartRoot(bookmark.id, rootId))
+      || !(await this.isValidSmartTarget(item.sourceParentId, rootId))) {
       await this.markReviewStale(item, '书签已被删除或手动移动，未执行建议。');
       throw new Error('书签位置已变化，建议已标记为过期。');
     }
@@ -286,10 +292,15 @@ export class OrganizerService {
   }
 
   private async resolveReviewTarget(item: ReviewItem): Promise<{ folderId: string; name: string } | null> {
+    const rootId = await this.getSmartRootId();
+    if (!rootId) {
+      await this.markReviewStale(item, '智能书签目录不可用，未执行建议。');
+      throw new Error('智能书签目录不可用，未执行建议。');
+    }
     if (item.classification.action === 'suggest_folder') {
       const { name, parentId } = item.classification.suggestedFolder;
       const parent = await this.deps.bookmarks.getFolder(parentId);
-      if (!parent || parent.unmodifiable === 'managed') {
+      if (!parent || parent.unmodifiable === 'managed' || !(await this.isValidSmartTarget(parentId, rootId))) {
         await this.markReviewStale(item, '建议的新目录上级已不存在或不可修改。');
         throw new Error('建议的新目录上级已不存在或不可修改。');
       }
@@ -301,7 +312,10 @@ export class OrganizerService {
       const target = item.targetFolderId
         ? await this.deps.bookmarks.getFolder(item.targetFolderId)
         : existing ?? await this.deps.bookmarks.createFolder(targetName, parentId);
-      if (!target || target.unmodifiable === 'managed') throw new Error('无法创建或找到建议文件夹。');
+      if (!target || target.unmodifiable === 'managed' || !(await this.isValidSmartTarget(target.id, rootId))) {
+        await this.markReviewStale(item, '建议的新目录不在智能书签目录内。');
+        throw new Error('无法创建或找到建议文件夹。');
+      }
       await this.deps.store.update((current) => {
         const review = current.reviews[item.id];
         if (review) {
@@ -314,7 +328,7 @@ export class OrganizerService {
     if (item.classification.action === 'move') {
       const targetFolderId = item.classification.targetFolderId;
       const target = await this.deps.bookmarks.getFolder(targetFolderId);
-      if (!target || target.unmodifiable === 'managed') {
+      if (!target || target.unmodifiable === 'managed' || !(await this.isValidSmartTarget(targetFolderId, rootId))) {
         await this.markReviewStale(item, '推荐文件夹已不存在或不可修改。');
         throw new Error('推荐文件夹已不存在或不可修改。');
       }
@@ -327,7 +341,10 @@ export class OrganizerService {
 
   private async revalidateReviewBeforeMove(item: ReviewItem, targetFolderId: string): Promise<boolean> {
     const latestBookmark = await this.deps.bookmarks.getBookmark(item.bookmarkId);
-    if (!latestBookmark || latestBookmark.parentId !== item.sourceParentId) {
+    const rootId = await this.getSmartRootId();
+    if (!rootId || !latestBookmark || latestBookmark.parentId !== item.sourceParentId
+      || !(await this.isWithinSmartRoot(latestBookmark.id, rootId))
+      || !(await this.isValidSmartTarget(item.sourceParentId, rootId))) {
       await this.markReviewStale(item, '书签位置在确认过程中发生变化，未执行移动。');
       throw new Error('书签位置发生变化，未执行移动。');
     }
@@ -337,7 +354,7 @@ export class OrganizerService {
       return false;
     }
     const target = await this.deps.bookmarks.getFolder(targetFolderId);
-    if (!target || target.unmodifiable === 'managed') {
+    if (!target || target.unmodifiable === 'managed' || !(await this.isValidSmartTarget(targetFolderId, rootId))) {
       await this.markReviewStale(item, '推荐文件夹已不存在或不可修改。');
       throw new Error('推荐文件夹已不存在或不可修改。');
     }
@@ -407,12 +424,18 @@ export class OrganizerService {
       const state = await this.deps.store.load();
       const record = state.lastUndo;
       if (!record) throw new Error('没有可以撤销的自动归档操作。');
+      const rootId = await this.getSmartRootId();
+      if (!rootId) throw new Error('智能书签目录不可用，无法撤销。');
       const bookmark = await this.deps.bookmarks.getBookmark(record.bookmarkId);
       if (!bookmark) throw new Error('书签已不存在，无法撤销。');
       if (bookmark.parentId !== record.toFolderId) {
         throw new Error('书签已被手动移动，为避免覆盖你的操作，无法撤销。');
       }
-      if (!(await this.deps.bookmarks.folderExists(record.fromFolderId))) throw new Error('原文件夹已不存在，无法撤销。');
+      if (!(await this.isWithinSmartRoot(bookmark.id, rootId))
+        || !(await this.isValidSmartTarget(record.toFolderId, rootId))
+        || !(await this.isValidSmartTarget(record.fromFolderId, rootId))) {
+        throw new Error('撤销目标不在智能书签目录内，已保留当前状态。');
+      }
       const operation: PendingOperation = {
         ...record,
         fromFolderId: record.toFolderId,
@@ -463,18 +486,27 @@ export class OrganizerService {
         await this.skipJob(id, '书签已被手动移动，已尊重当前目录。');
         return;
       }
-      const historicalForce = job.scanId && state.historicalScan?.id === job.scanId
-        ? state.historicalScan.forceOrganize
-        : state.settings.forceOrganize;
-      if (!historicalForce && !(await this.deps.bookmarks.isEligibleRoot(bookmark.parentId ?? ''))) {
-        await this.skipJob(id, '书签不在可自动整理的内置目录中。');
+      const rootId = state.smartBookmarkRootId;
+      if (!rootId || !this.deps.bookmarks.isWithinRoot
+        || !(await this.isWithinSmartRoot(bookmark.id, rootId))) {
+        await this.skipJob(id, '书签不在智能书签目录内，已保留原位。');
         return;
       }
       await this.updateJob(id, (current) => { current.status = 'processing'; current.updatedAt = this.now(); });
       state = await this.deps.store.load();
       job = state.jobs[id];
       if (!job) return;
-      const folders = await this.deps.bookmarks.getFolders();
+      const latestRootId = state.smartBookmarkRootId;
+      if (!latestRootId || !this.deps.bookmarks.isWithinRoot
+        || !(await this.isWithinSmartRoot(bookmark.id, latestRootId))) {
+        await this.skipJob(id, '智能书签目录已变化，书签保留原位。');
+        return;
+      }
+      const folders = await this.getFoldersWithinSmartRoot(latestRootId);
+      if (!folders) {
+        await this.failJob(id, '智能书签目录结构不可用，书签保持原位。', false, state.settings);
+        return;
+      }
       const currentFolder = folders.find((folder) => folder.id === bookmark.parentId);
       if (!currentFolder) {
         await this.failJob(id, '当前文件夹已不存在，书签保持原位。', false);
@@ -569,6 +601,12 @@ export class OrganizerService {
   ): Promise<void> {
     await this.withMutationLock(async () => {
       const state = await this.deps.store.load();
+      const rootId = state.smartBookmarkRootId;
+      if (!rootId || !this.deps.bookmarks.isWithinRoot || !this.deps.bookmarks.isValidTargetFolder
+        || !(await this.isWithinSmartRoot(job.bookmark.id, rootId))) {
+        await this.skipJob(job.bookmark.id, '智能书签目录不可用或书签已在目录外，已保留原位。');
+        return;
+      }
       if (state.pendingOperation) throw new Error('另一项书签移动仍在恢复中，当前书签保持原位。');
       if (!state.settings.enabled) {
         await this.skipJob(job.bookmark.id, '自动整理已关闭，书签保留原位。');
@@ -579,8 +617,12 @@ export class OrganizerService {
         await this.skipJob(job.bookmark.id, '移动前书签位置发生变化，未覆盖当前操作。');
         return;
       }
-      if (!state.settings.forceOrganize && !(await this.deps.bookmarks.isEligibleRoot(bookmark.parentId ?? ''))) {
-        await this.skipJob(job.bookmark.id, '书签已不在可自动整理的内置目录中。');
+      if (!(await this.isWithinSmartRoot(bookmark.id, rootId))) {
+        await this.skipJob(job.bookmark.id, '书签已移出智能书签目录，未覆盖当前操作。');
+        return;
+      }
+      if (!(await this.isValidSmartTarget(targetFolderId, rootId))) {
+        await this.failJob(job.bookmark.id, '推荐文件夹已删除、不可修改或位于智能书签目录外，书签保持原位。', false, state.settings);
         return;
       }
       if (state.settings.mode !== 'automatic' || confidence < state.settings.confidenceThreshold) {
@@ -588,11 +630,11 @@ export class OrganizerService {
           action: 'move', targetFolderId,
           confidence,
           reason,
-        }, source, await this.deps.bookmarks.getFolders(), state.settings);
+        }, source, await this.getFoldersWithinSmartRoot(rootId) ?? [], state.settings);
         return;
       }
       const target = await this.deps.bookmarks.getFolder(targetFolderId);
-      if (!target || target.unmodifiable === 'managed') {
+      if (!target || target.unmodifiable === 'managed' || !(await this.isValidSmartTarget(targetFolderId, rootId))) {
         await this.failJob(job.bookmark.id, '推荐文件夹已删除或不可修改，书签保持原位。', false, state.settings);
         return;
       }
@@ -628,10 +670,12 @@ export class OrganizerService {
         await this.skipJob(job.bookmark.id, '移动前书签位置发生变化，未覆盖当前操作。');
         return;
       }
-      if (!latestState.settings.forceOrganize
-        && !(await this.deps.bookmarks.isEligibleRoot(latestBookmark.parentId ?? ''))) {
+      const latestRootId = latestState.smartBookmarkRootId;
+      if (!latestRootId || !this.deps.bookmarks.isWithinRoot
+        || !(await this.isWithinSmartRoot(latestBookmark.id, latestRootId))
+        || !(await this.isValidSmartTarget(operation.toFolderId, latestRootId))) {
         await this.clearPendingOperation(operation.operationId);
-        await this.skipJob(job.bookmark.id, '书签已不在可自动整理的内置目录中。');
+        await this.skipJob(job.bookmark.id, '移动目标已不在智能书签目录内。');
         return;
       }
       if (latestState.settings.mode !== 'automatic' || confidence < latestState.settings.confidenceThreshold) {
@@ -640,7 +684,7 @@ export class OrganizerService {
           action: 'move', targetFolderId,
           confidence,
           reason,
-        }, source, await this.deps.bookmarks.getFolders(), latestState.settings);
+        }, source, await this.getFoldersWithinSmartRoot(latestRootId) ?? [], latestState.settings);
         return;
       }
       if (await this.moveWithRecovery(operation)) {
@@ -776,8 +820,15 @@ export class OrganizerService {
    */
   private async moveWithRecovery(operation: PendingOperation): Promise<boolean> {
     try {
+      const rootId = await this.getSmartRootId();
+      if (!rootId || !this.deps.bookmarks.isValidTargetFolder
+        || !(await this.isValidSmartTarget(operation.fromFolderId, rootId))
+        || !(await this.isValidSmartTarget(operation.toFolderId, rootId))) {
+        throw new Error('移动目标不在智能书签目录内。');
+      }
       const bookmark = await this.deps.bookmarks.getBookmark(operation.bookmarkId);
-      if (!bookmark || bookmark.parentId !== operation.fromFolderId) {
+      if (!bookmark || bookmark.parentId !== operation.fromFolderId
+        || !(await this.isWithinSmartRoot(bookmark.id, rootId))) {
         throw new Error('书签位置已变化，未执行移动。');
       }
       await this.deps.bookmarks.moveBookmark(operation.bookmarkId, operation.toFolderId);
@@ -829,12 +880,23 @@ export class OrganizerService {
     if (!operation) return;
     const bookmark = await this.deps.bookmarks.getBookmark(operation.bookmarkId);
     const actualParent = bookmark?.parentId;
+    const rootId = initial.smartBookmarkRootId;
+    const boundaryValid = Boolean(rootId && this.deps.bookmarks.isWithinRoot && this.deps.bookmarks.isValidTargetFolder)
+      && await this.isValidSmartTarget(operation.fromFolderId, rootId!)
+      && await this.isValidSmartTarget(operation.toFolderId, rootId!)
+      && Boolean(bookmark && await this.isWithinSmartRoot(bookmark.id, rootId!));
     await this.deps.store.update((state) => {
       const pending = state.pendingOperation;
       if (!pending || pending.operationId !== operation.operationId) return;
       const job = state.jobs[pending.bookmarkId];
       const review = pending.reviewId ? state.reviews[pending.reviewId] : undefined;
-      if (actualParent === pending.toFolderId) {
+      if (!boundaryValid) {
+        if (review) review.status = 'stale';
+        if (job) {
+          job.status = 'skipped';
+          job.lastError = '智能书签目录边界已变化，未覆盖当前状态。';
+        }
+      } else if (actualParent === pending.toFolderId) {
         if (pending.kind === 'automatic') {
           state.lastUndo = {
             bookmarkId: pending.bookmarkId,
@@ -900,6 +962,39 @@ export class OrganizerService {
     const run = this.mutationChain.then(operation, operation);
     this.mutationChain = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  private async getSmartRootId(): Promise<string | null> {
+    const rootId = (await this.deps.store.load()).smartBookmarkRootId;
+    return rootId && this.deps.bookmarks.isWithinRoot && this.deps.bookmarks.isValidTargetFolder
+      && this.deps.bookmarks.getFoldersWithinRoot ? rootId : null;
+  }
+
+  private async isWithinSmartRoot(nodeId: string, rootId: string): Promise<boolean> {
+    if (!this.deps.bookmarks.isWithinRoot) return false;
+    try {
+      return await this.deps.bookmarks.isWithinRoot(nodeId, rootId);
+    } catch {
+      return false;
+    }
+  }
+
+  private async isValidSmartTarget(folderId: string, rootId: string): Promise<boolean> {
+    if (!this.deps.bookmarks.isValidTargetFolder) return false;
+    try {
+      return await this.deps.bookmarks.isValidTargetFolder(folderId, rootId);
+    } catch {
+      return false;
+    }
+  }
+
+  private async getFoldersWithinSmartRoot(rootId: string): Promise<FolderSummary[] | null> {
+    if (!this.deps.bookmarks.getFoldersWithinRoot) return null;
+    try {
+      return await this.deps.bookmarks.getFoldersWithinRoot(rootId);
+    } catch {
+      return null;
+    }
   }
 }
 

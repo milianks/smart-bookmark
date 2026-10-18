@@ -139,4 +139,33 @@ describe('ChromeStateRepository', () => {
     expect(loaded.bookmarkMetadata).toEqual({ valid: { summary: 'Saved summary', tags: ['TypeScript', 'AI'], generatedAt: 42 } });
     expect(storage.set).not.toHaveBeenCalled();
   });
+
+  it('向后兼容智能书签根目录状态，并拒绝无效根目录 ID', async () => {
+    const storage: LocalStorageArea = {
+      get: vi.fn(async (key) => ({ [key]: {
+        version: 1,
+        settings: { apiKey: 'fixture' },
+        smartBookmarkRootId: '  smart-root  ',
+        smartBookmarkInitialized: true,
+      } })),
+      set: vi.fn(async () => undefined),
+    };
+
+    const loaded = await new ChromeStateRepository(storage).load();
+    expect(loaded.smartBookmarkRootId).toBe('smart-root');
+    expect(loaded.smartBookmarkInitialized).toBe(true);
+
+    const malformedStorage: LocalStorageArea = {
+      get: vi.fn(async (key) => ({ [key]: {
+        version: 1,
+        settings: { apiKey: 'fixture' },
+        smartBookmarkRootId: '   ',
+        smartBookmarkInitialized: true,
+      } })),
+      set: vi.fn(async () => undefined),
+    };
+    const malformed = await new ChromeStateRepository(malformedStorage).load();
+    expect(malformed.smartBookmarkRootId).toBeUndefined();
+    expect(malformed.smartBookmarkInitialized).toBe(false);
+  });
 });

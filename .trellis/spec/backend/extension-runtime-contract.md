@@ -9,7 +9,9 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 ### 2. Signatures
 
 - `BookmarkPort.getTree(): Promise<BookmarkNode[]>`
-- `BookmarkPort.getFolders(): Promise<FolderSummary[]>`
+- `BookmarkPort.isWithinRoot(nodeId: string, rootId: string): Promise<boolean>`
+- `BookmarkPort.getFoldersWithinRoot(rootId: string): Promise<FolderSummary[]>`
+- `BookmarkPort.isValidTargetFolder(targetFolderId: string, rootId: string): Promise<boolean>`
 - `BookmarkPort.moveBookmark(bookmarkId: string, targetFolderId: string): Promise<void>`
 - `BookmarkPort.createFolder(name: string, parentId: string): Promise<BookmarkNode>`
 - `ClassifierPort.classify(input, folders, settings, hasProviderPermission): Promise<ClassifiedResult>`
@@ -24,14 +26,16 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 
 - The background validates with `RequestSchema` before dispatching to `handleRequest`; the router calls only injected service facades and preserves the existing success/error envelope at the listener boundary.
   For `settings:update`, normalize a shallow copy of `request.settings` so the parsed request is not mutated; return no API key or provider payload.
-- Classification input contains one new bookmark's title, URL, domain, current folder ID/path, and folder `{id, name, path}` summaries. Never send the full bookmark tree or page content to the provider.
+- Classification input contains one new bookmark's title, URL, domain, current folder ID/path, and folder `{id, name, path}` summaries from the persisted smart bookmark root only. Never send the full bookmark tree or page content to the provider.
 - Classification output is strict Zod data: `move` requires `targetFolderId`; `suggest_folder` requires a name and `parentId`; `keep` has no destination; confidence is in `[0,1]`.
 - Persist jobs, review items, settings and settings drafts, cache, activity history, import marker, undo record, and pending mutation intent through `chrome.storage.local`. Keep API keys out of sync storage, logs, errors, and notifications.
 - Register Chrome listeners synchronously at background module initialization. Persist a job before classification; use bookmark ID as its idempotency key. Use alarms for finite retry and worker restart recovery.
 - During `resume()`, query permission for the currently configured provider origin. Promote `awaiting_permission` jobs only when an API key exists and that exact origin is granted; clear the stale permission error before requeueing.
 - Persist a pending move intent before calling `chrome.bookmarks.move`; re-read the bookmark and validate its source and destination immediately before mutation. Never delete a bookmark or folder.
 - If `chrome.bookmarks.move` rejects, reconcile the persisted intent immediately against the bookmark's live parent. Treat the move as committed if the target parent is observed; clear the intent and fail safely if the source remains; mark the operation stale/skipped if the bookmark is elsewhere.
-- Default processing accepts only direct children of built-in roots detected through `folderType`. Treat nested user folders as intentional and preserve them unless force mode is enabled.
+- The background initializes one account-named folder under the editable `bookmarks-bar` root, stores its ID in local state, and creates the default first-level folders once. If `chrome.identity.getProfileUserInfo()` has no email, use `bookmark` as the owner name.
+- Automatic classification, manual metadata generation, historical scans, review mutations, undo, and recovery are limited to that persisted smart root and its descendants. Re-read the live tree before sending bookmark data to a provider or mutating Chrome bookmarks.
+- Retain the legacy `forceOrganize` setting only for storage compatibility; it must not expand the smart-root boundary.
 - Automatic moves require automatic mode and confidence at or above the configured threshold. Folder creation always waits for explicit review approval. Review approval must be idempotent and revalidate live bookmark/folder state.
 
 ### 4. Validation & Error Matrix
@@ -39,6 +43,8 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 | Condition | Required behavior |
 |---|---|
 | Folder event, unsupported URL scheme, or malformed URL | Ignore without creating a job |
+| Bookmark or containing folder is outside the persisted smart root | Do not persist a new classification job, call a provider, or mutate the bookmark |
+| Smart root ID is missing, deleted, or no longer resolves to an editable folder | Keep bookmarks in place; initialization may recreate/recover the root before queued work resumes |
 | Import marker active | Suppress new classification; expire stale marker during recovery |
 | API key missing | Persist `awaiting_configuration`; leave bookmark where it is |
 | API origin permission missing | Persist `awaiting_permission`; do not call `fetch` |
@@ -51,7 +57,7 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 
 ### 5. Good / Base / Bad Cases
 
-- **Good**: A newly created bookmark under `bookmarks-bar` is persisted, classified, matched to a real folder, and moved only after a fresh source/target check; an undo record stores both folder IDs.
+- **Good**: A newly created bookmark under the persisted smart root is persisted, classified with only smart-root folder summaries, matched to a real folder, and moved only after a fresh source/target check; an undo record stores both folder IDs.
 - **Base**: A low-confidence match creates a durable review item and notification while the bookmark remains in its source folder.
 - **Bad**: A model returns an invented folder ID, an API request fails, or a stale review is approved; the result must not mutate the bookmark.
 
@@ -61,8 +67,9 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 - Assert existing-folder auto-move, new-folder approval, rejection, missing key, provider failure, import suppression, deleted targets, duplicate/concurrent events, worker recovery, and undo.
 - Assert a rejected move clears or reconciles its pending intent immediately, including the case where the browser applied the move before the promise rejected; later mutations must not remain blocked.
 - Assert missing provider permission leaves the job waiting and granting the exact configured origin lets `resume()` classify it once.
+- Assert root-outside bookmarks and targets never reach the provider, review creation, folder creation, movement, or undo; changing folder names and nesting changes the next classification's live summaries.
 - Assert every failed/stale path leaves the bookmark parent unchanged and does not call create/move unexpectedly.
-- Inspect the production manifest: required permissions are `bookmarks`, `storage`, `notifications`, and `alarms`; provider origins remain optional and no static all-site permission is present.
+- Inspect the production manifest: required permissions are `bookmarks`, `storage`, `notifications`, `alarms`, and `identity.email`; provider origins remain optional and no static all-site permission is present.
 
 ### 7. Wrong vs Correct
 
@@ -80,8 +87,10 @@ This trusts model output, skips schema/tree validation, and bypasses the durable
 ```ts
 const bookmark = await this.deps.bookmarks.getBookmark(job.bookmark.id);
 const target = await this.deps.bookmarks.getFolder(targetFolderId);
-if (!bookmark || bookmark.parentId !== job.bookmark.parentId) return;
-if (!target || target.unmodifiable === 'managed') return;
+const rootId = (await this.deps.store.load()).smartBookmarkRootId;
+if (!rootId || !bookmark || bookmark.parentId !== job.bookmark.parentId) return;
+if (!(await this.deps.bookmarks.isWithinRoot(bookmark.id, rootId))) return;
+if (!(await this.deps.bookmarks.isValidTargetFolder(targetFolderId, rootId))) return;
 await this.deps.store.update((state) => { state.pendingOperation = operation; });
 try {
   await this.deps.bookmarks.moveBookmark(job.bookmark.id, targetFolderId);
@@ -91,7 +100,7 @@ try {
 }
 ```
 
-This is the live-source/target and durable-intent sequence used by `OrganizerService.automaticMove`. A rejected call can still have changed the browser state, so reconciliation compares the actual parent with both recorded parents before deciding whether the operation completed or failed. Keep Chrome API mutation inside the organizer and validate every ID against the current bookmark tree.
+This is the live-source/target and durable-intent sequence used by `OrganizerService.automaticMove`. A rejected call can still have changed the browser state, so reconciliation compares the actual parent with both recorded parents before deciding whether the operation completed or failed. Keep Chrome API mutation inside the organizer and validate every ID against the current smart-root subtree.
 
 ## Scenario: Multi-protocol AI provider and connection test
 
@@ -167,7 +176,7 @@ Use this contract when adding or changing the explicit scan of existing bookmark
 
 ### 2. Signatures
 
-- `enumerateHistoricalBookmarks(tree: BookmarkNode[], forceOrganize: boolean): HistoricalBookmarkCandidate[]`.
+- `enumerateHistoricalBookmarksWithinRoot(tree: BookmarkNode[], rootId: string): HistoricalBookmarkCandidate[]`.
 - `OrganizerService.startHistoricalScan(): Promise<{ scanId: string; eligibleTotal: number }>`.
 - `OrganizerService.approveAllHistoricalReviews(scanId?: string): Promise<number>`.
 - `OrganizerService.undoHistoricalLast(): Promise<number>`.
@@ -177,7 +186,7 @@ Use this contract when adding or changing the explicit scan of existing bookmark
 ### 3. Contracts
 
 - A scan is explicit and preview-only. It never moves a bookmark or creates a folder during classification.
-- Enumeration accepts HTTP(S) bookmark nodes under editable built-in roots. Without force mode, only direct children of those roots qualify; force mode includes descendants while still excluding managed branches. Folders and unsupported URL schemes are skipped.
+- Enumeration accepts only editable HTTP(S) bookmark nodes in the persisted smart-root subtree. Managed branches, folders, and unsupported URL schemes are skipped; `forceOrganize` does not expand this boundary.
 - Scan jobs persist before classification and reuse the existing classifier, cache, folder-target validation, review creation, pending move intent, and worker recovery paths.
 - Historical `move` and `suggest_folder` results always become pending reviews, independent of normal automatic mode or confidence threshold. `keep` completes without mutation.
 - `scan:approve-all` processes a snapshot sequentially through the same live source/target checks as per-item approval. Stale, deleted, or failed items do not abort other items. An instance lock rejects a concurrent batch request.
@@ -199,13 +208,13 @@ Use this contract when adding or changing the explicit scan of existing bookmark
 
 ### 5. Good / Base / Bad Cases
 
-- **Good**: A direct child of `bookmarks-bar` is classified, shown in Review, approved once, moved after fresh checks, and recorded in the latest batch undo list.
-- **Base**: A scan finds nested user-folder bookmarks with force mode off; it skips them and reports the skipped count without calling the provider.
+- **Good**: A bookmark under the persisted smart root is classified, shown in Review, approved once, moved after fresh checks, and recorded in the latest batch undo list.
+- **Base**: A scan finds bookmarks under another Chrome root; it excludes them without calling the provider.
 - **Bad**: A provider suggests a managed/nonexistent destination or a user moves the bookmark before approval; the scan leaves the bookmark untouched and exposes a stale/failure status.
 
 ### 6. Tests Required
 
-- Enumeration: direct-root protection, force descendants, managed branches, HTTP(S) filtering, folders, and duplicate IDs.
+- Enumeration: smart-root isolation, managed branches, HTTP(S) filtering, folders, and duplicate IDs.
 - Persistence: valid historical scan/undo normalization and safe loading of legacy state without these fields.
 - Service: preview-only classification, scan start idempotency/concurrency, worker restart recovery, missing key/permission waiting, stale/manual move handling, batch approval isolation, and batch undo skips.
 - Router tests must cover strict rejection of malformed/extra-field requests, every RuntimeRequest route and facade argument, copy-based URL normalization, API-key isolation, and unchanged error propagation.
@@ -228,7 +237,7 @@ This bypasses the protection boundary, preview requirement, durable scan job, li
 #### Correct
 
 ```ts
-const candidates = enumerateHistoricalBookmarks(tree, settings.forceOrganize);
+const candidates = enumerateHistoricalBookmarksWithinRoot(tree, smartBookmarkRootId);
 await store.update((state) => persistScanJobs(state, candidates, scanId));
 await classifyHistoricalJobs(scanId); // move/suggest_folder -> durable pending review
 await organizer.approveAllHistoricalReviews(scanId); // sequential live checks and intents
@@ -265,20 +274,20 @@ Use this contract when adding user-triggered summary/tag generation for an exist
 |---|---|
 | Malformed runtime request or empty/oversized bookmark ID | Reject before dispatch |
 | API key missing or provider-origin permission absent | Return a bounded user-facing error; do not call the provider or replace existing metadata |
-| Bookmark or containing folder no longer exists | Fail safely; preserve existing metadata |
+| Bookmark is outside the smart root or its containing folder no longer exists | Fail before provider call; preserve existing metadata |
 | Provider request fails or returns invalid JSON/schema/extra fields | Return a sanitized error; preserve existing metadata |
 | Valid provider response | Persist one validated record for the selected bookmark and return it |
 | Concurrent request for the same bookmark ID | Share the in-flight result; do not issue duplicate provider calls |
 
 ### 5. Good / Base / Bad Cases
 
-- **Good**: A user generates a summary for a live bookmark; only the allowed metadata fields are sent, strict output is validated, local state is updated, and the bookmark remains in the same folder.
+- **Good**: A user generates a summary for a live bookmark under the smart root; only the root-scoped folder path and allowed bookmark metadata are sent, strict output is validated, local state is updated, and the bookmark remains in the same folder.
 - **Base**: The provider origin is not permitted; the UI shows an error and any previous summary/tag record remains visible.
 - **Bad**: Provider output contains extra fields, oversized values, or duplicate tags; reject it without persisting provider data or changing bookmark state.
 
 ### 6. Tests Required
 
-- Assert prompt input contains only title, URL, domain, and folder path; validate strict output bounds, uniqueness, and extra-field rejection.
+- Assert prompt input contains only title, URL, domain, and a folder path from `getFoldersWithinRoot(rootId)`; reject root-outside bookmarks before provider calls and validate strict output bounds, uniqueness, and extra-field rejection.
 - Assert legacy state normalization, metadata persistence, and malformed-record dropping without changing storage version.
 - Assert missing permission/provider failure/invalid output preserve previous metadata; assert same-ID concurrency deduplicates and no bookmark mutation method is called.
 - Assert strict runtime request routing and dashboard projection onto matching job/review items without exposing the complete metadata map.

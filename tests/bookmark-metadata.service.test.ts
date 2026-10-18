@@ -8,10 +8,14 @@ function makeSetup() {
   const initial = emptyPersistedState();
   initial.settings.apiKey = 'private-key';
   initial.settings.baseUrl = 'https://provider.example/v1';
+  initial.smartBookmarkRootId = 'smart-root';
+  initial.smartBookmarkInitialized = true;
   const store = new MemoryStateRepository(initial);
   const bookmarks = {
     getBookmark: vi.fn(async () => ({ id: 'bookmark-1', title: 'Example title', url: 'https://example.test/docs', parentId: 'folder-1' })),
     getFolderPath: vi.fn(async () => 'Bookmarks bar / Dev'),
+    isWithinRoot: vi.fn(async () => true),
+    getFoldersWithinRoot: vi.fn(async () => [{ id: 'folder-1', name: 'Dev', path: 'yuan 的智能书签 / Dev' }]),
     getTree: vi.fn(), getFolder: vi.fn(), getFolders: vi.fn(), folderExists: vi.fn(), isEligibleRoot: vi.fn(),
     moveBookmark: vi.fn(), createFolder: vi.fn(),
   } as unknown as BookmarkPort;
@@ -32,8 +36,9 @@ describe('BookmarkMetadataService', () => {
 
     expect(hasProviderPermission).toHaveBeenCalledWith('https://provider.example/v1');
     expect(generateMetadata).toHaveBeenCalledWith({
-      title: 'Example title', url: 'https://example.test/docs', domain: 'example.test', currentFolder: 'Bookmarks bar / Dev',
+      title: 'Example title', url: 'https://example.test/docs', domain: 'example.test', currentFolder: 'yuan 的智能书签 / Dev',
     }, expect.objectContaining({ apiKey: 'private-key' }));
+    expect(bookmarks.getFoldersWithinRoot).toHaveBeenCalledWith('smart-root');
     expect(await store.load()).toMatchObject({ bookmarkMetadata: { 'bookmark-1': { summary: 'Useful documentation' } } });
     expect(bookmarks.moveBookmark).not.toHaveBeenCalled();
     expect(bookmarks.createFolder).not.toHaveBeenCalled();
@@ -114,5 +119,15 @@ describe('BookmarkMetadataService', () => {
     await expect(service.generate('bookmark-1')).rejects.toThrow('书签不存在或已被删除');
     expect(generateMetadata).not.toHaveBeenCalled();
     expect((await store.load()).bookmarkMetadata['bookmark-1']).toEqual(old);
+  });
+
+  it('rejects bookmarks outside the smart root before reading or sending metadata', async () => {
+    const { service, bookmarks, provider, generateMetadata } = makeSetup();
+    vi.mocked(bookmarks.isWithinRoot!).mockResolvedValueOnce(false);
+
+    await expect(service.generate('bookmark-1')).rejects.toThrow('书签不在智能书签目录内');
+    expect(bookmarks.getFoldersWithinRoot).not.toHaveBeenCalled();
+    expect(generateMetadata).not.toHaveBeenCalled();
+    expect(provider.classify).not.toHaveBeenCalled();
   });
 });

@@ -208,6 +208,8 @@ export interface HistoricalBatchUndoRecord {
 
 export interface PersistedState {
   version: 1;
+  smartBookmarkRootId?: string;
+  smartBookmarkInitialized: boolean;
   settings: Settings;
   jobs: Record<string, BookmarkJob>;
   reviews: Record<string, ReviewItem>;
@@ -247,6 +249,7 @@ export interface ClassifiedResult {
 
 export const emptyPersistedState = (): PersistedState => ({
   version: 1,
+  smartBookmarkInitialized: false,
   settings: { ...DEFAULT_SETTINGS },
   jobs: {},
   reviews: {},

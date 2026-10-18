@@ -186,10 +186,6 @@ export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
                 <option value="confirm">每次确认后移动</option>
               </select>
             </Field>
-            <label className="flex items-start gap-3">
-              <input type="checkbox" checked={form.forceOrganize} onChange={(event) => change('forceOrganize', event.target.checked)} className="mt-1 size-4 accent-violet-600" />
-              <span><span className="block text-sm font-medium">强制整理自建文件夹中的书签</span><span className="mt-1 block text-xs leading-5 text-slate-500">默认尊重书签当前所在的用户文件夹。开启后也会整理这些位置。</span></span>
-            </label>
           </div>
         </details>
       </CardContent>
@@ -212,7 +208,7 @@ export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
           <p>分类只发送当前书签的标题、URL、域名和文件夹清单，不读取网页正文，也不上传整套书签库。</p>
           <p>扩展不申请访问所有网页。点击“授权并测试 AI”时，Chrome 只请求上方 API 地址的来源权限。</p>
           <p>API Key 保存在扩展本地存储中。请使用可撤销、低额度的密钥，避免在共享设备上保存。</p>
-          <p>默认仅整理直接保存在书签栏、其他书签或移动设备书签根目录的新增项。</p>
+          <p>默认仅整理“智能书签”目录及其子目录中的新增项。</p>
         </div>
       </details>
     </CardContent></Card>

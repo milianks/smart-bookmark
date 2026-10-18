@@ -6,7 +6,9 @@ import { ScanService } from '../services/scan.service';
 
 const tree: BookmarkNode[] = [{ id: 'root', title: '', children: [{
   id: 'bar', title: 'Bookmarks bar', folderType: 'bookmarks-bar', children: [
-    { id: 'b1', title: 'Bookmark', url: 'https://example.test/a', parentId: 'bar' },
+    { id: 'smart-root', title: 'bookmark 的智能书签', parentId: 'bar', children: [
+      { id: 'b1', title: 'Bookmark', url: 'https://example.test/a', parentId: 'smart-root' },
+    ] },
   ],
 }] }];
 const bookmarks: BookmarkPort = {
@@ -18,6 +20,7 @@ const bookmarks: BookmarkPort = {
 describe('ScanService', () => {
   it('persists preview jobs and rejects concurrent start while processing', async () => {
     const store = new MemoryStateRepository();
+    await store.update((state) => { state.smartBookmarkRootId = 'smart-root'; state.smartBookmarkInitialized = true; });
     let unblock!: () => void;
     const pending = new Promise<void>((resolve) => { unblock = resolve; });
     const scan = new ScanService({ bookmarks, store, processPending: async () => pending, approveReview: async () => {}, makeId: () => 'scan-1' });
@@ -34,6 +37,8 @@ describe('ScanService', () => {
   it('refreshes state and holds batch lock while delegating approved items', async () => {
     const initial = emptyPersistedState();
     initial.settings.apiKey = 'key';
+    initial.smartBookmarkRootId = 'smart-root';
+    initial.smartBookmarkInitialized = true;
     const store = new MemoryStateRepository(initial);
     let release!: () => void;
     const gate = new Promise<void>((resolve) => { release = resolve; });

@@ -1,0 +1,7 @@
+{"file":".trellis/tasks/10-18-smart-bookmark-root/prd.md","reason":"Check observable acceptance criteria, scope boundaries, privacy constraints, and resolved planning decisions."}
+{"file":".trellis/tasks/10-18-smart-bookmark-root/design.md","reason":"Check that every root boundary, identity fallback, async race, and rollback path is represented in the implementation."}
+{"file":".trellis/tasks/10-18-smart-bookmark-root/research/chrome-identity.md","reason":"Verify manifest permission and getProfileUserInfo assumptions used by initialization."}
+{"file":".trellis/spec/backend/extension-runtime-contract.md","reason":"Review worker lifecycle, state recovery, and live mutation safety."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review target validation, no root-outside AI exposure, and regression coverage."}
+{"file":".trellis/spec/frontend/extension-ui-contract.md","reason":"Check settings control removal and preservation of typed background-owned UI behavior."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Check UI regression, accessibility, and secret/state boundary after removing obsolete scope control."}

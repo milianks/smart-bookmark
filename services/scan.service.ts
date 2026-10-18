@@ -1,5 +1,5 @@
 import { appendActivity } from './activity-log';
-import { enumerateHistoricalBookmarks, type BookmarkPort } from './bookmark.service';
+import { enumerateHistoricalBookmarksWithinRoot, type BookmarkPort } from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
 import { createId } from '../lib/utils/ids';
 import { refreshHistoricalScan } from './scan-state';
@@ -32,7 +32,10 @@ export class ScanService {
       if (state.historicalScan && ['scanning', 'awaiting_review'].includes(state.historicalScan.status)) {
         throw new Error('已有历史扫描正在进行，请先处理当前扫描。');
       }
-      const candidates = enumerateHistoricalBookmarks(await this.deps.bookmarks.getTree(), state.settings.forceOrganize);
+      const rootId = state.smartBookmarkRootId;
+      const candidates = rootId
+        ? enumerateHistoricalBookmarksWithinRoot(await this.deps.bookmarks.getTree(), rootId)
+        : [];
       const existing = new Set<string>();
       for (const id of Object.keys(state.jobs)) existing.add(id);
       for (const id of Object.keys(state.reviews)) existing.add(id);
@@ -43,7 +46,7 @@ export class ScanService {
         id: scanId, status: 'scanning' as const, startedAt: now, updatedAt: now,
         eligibleTotal: candidates.length, processedCount: 0, pendingReviewCount: 0,
         failedCount: 0, skippedCount: candidates.length - fresh.length,
-        coveredIds: candidates.map((candidate) => candidate.id), forceOrganize: state.settings.forceOrganize,
+        coveredIds: candidates.map((candidate) => candidate.id), forceOrganize: false,
       };
       await this.deps.store.update((current) => {
         current.historicalScan = scan;

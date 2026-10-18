@@ -21,7 +21,7 @@ describe('OrganizerService', () => {
 
     expect(h.bookmarks.parents.get('bookmark-1')).toBe('folder-dev');
     const state = await h.store.load();
-    expect(state.lastUndo?.fromFolderId).toBe('bookmarks-bar');
+    expect(state.lastUndo?.fromFolderId).toBe('smart-root');
     expect(state.lastUndo?.toFolderId).toBe('folder-dev');
     expect(state.jobs['bookmark-1']?.status).toBe('completed');
   });
@@ -29,14 +29,14 @@ describe('OrganizerService', () => {
   it('没有匹配文件夹时只创建待确认建议，不直接创建或移动', async () => {
     const suggestion: ClassificationResult = {
       action: 'suggest_folder',
-      suggestedFolder: { name: '研究资料', parentId: 'bookmarks-bar' },
+      suggestedFolder: { name: '研究资料', parentId: 'smart-root' },
       confidence: 0.78,
       reason: '现有目录没有合适的研究主题。',
     };
     const h = createHarness({ result: suggestion, source: 'ai' });
     await h.organizer.onBookmarkCreated('bookmark-1', bookmarkEvent());
 
-    expect(h.bookmarks.parents.get('bookmark-1')).toBe('bookmarks-bar');
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
     expect(h.bookmarks.createdFolders).toHaveLength(0);
     expect((await h.store.load()).reviews['bookmark-1']?.status).toBe('pending');
     expect(h.notifications.reviewNeeded).toHaveBeenCalledOnce();
@@ -45,7 +45,7 @@ describe('OrganizerService', () => {
   it('用户确认后幂等创建建议文件夹并移动书签', async () => {
     const suggestion: ClassificationResult = {
       action: 'suggest_folder',
-      suggestedFolder: { name: '研究资料', parentId: 'bookmarks-bar' },
+      suggestedFolder: { name: '研究资料', parentId: 'smart-root' },
       confidence: 0.76,
       reason: '需要单独的研究分类。',
     };
@@ -61,13 +61,13 @@ describe('OrganizerService', () => {
 
   it('用户拒绝建议后书签保持原位', async () => {
     const h = createHarness({
-      result: { action: 'suggest_folder', suggestedFolder: { name: '研究', parentId: 'bookmarks-bar' }, confidence: 0.7, reason: '新主题。' },
+      result: { action: 'suggest_folder', suggestedFolder: { name: '研究', parentId: 'smart-root' }, confidence: 0.7, reason: '新主题。' },
       source: 'ai',
     });
     await h.organizer.onBookmarkCreated('bookmark-1', bookmarkEvent());
     await h.organizer.rejectReview('bookmark-1');
 
-    expect(h.bookmarks.parents.get('bookmark-1')).toBe('bookmarks-bar');
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
     expect(h.bookmarks.createdFolders).toHaveLength(0);
     expect((await h.store.load()).reviews['bookmark-1']?.status).toBe('rejected');
   });
@@ -76,7 +76,7 @@ describe('OrganizerService', () => {
     const h = createHarness({ error: new ProviderError('AI 分类结果不符合安全格式', false) });
     await h.organizer.onBookmarkCreated('bookmark-1', bookmarkEvent());
 
-    expect(h.bookmarks.parents.get('bookmark-1')).toBe('bookmarks-bar');
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
     expect((await h.store.load()).jobs['bookmark-1']?.status).toBe('failed');
     expect(h.notifications.processingFailed).toHaveBeenCalledOnce();
   });
@@ -110,7 +110,7 @@ describe('OrganizerService', () => {
     await h.organizer.onBookmarkCreated('bookmark-1', bookmarkEvent());
 
     let state = await h.store.load();
-    expect(h.bookmarks.parents.get('bookmark-1')).toBe('bookmarks-bar');
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
     expect(state.pendingOperation).toBeUndefined();
     expect(state.jobs['bookmark-1']?.status).toBe('failed');
 
@@ -134,7 +134,7 @@ describe('OrganizerService', () => {
     expect(h.bookmarks.parents.get('bookmark-1')).toBe('folder-dev');
     expect(h.bookmarks.moveCount).toBe(1);
     expect(state.jobs['bookmark-1']?.status).toBe('completed');
-    expect(state.lastUndo).toMatchObject({ fromFolderId: 'bookmarks-bar', toFolderId: 'folder-dev' });
+    expect(state.lastUndo).toMatchObject({ fromFolderId: 'smart-root', toFolderId: 'folder-dev' });
     expect(state.pendingOperation).toBeUndefined();
   });
 
@@ -158,7 +158,7 @@ describe('OrganizerService', () => {
     expect(state.jobs['bookmark-1']?.status).toBe('failed');
     expect(state.jobs['bookmark-1']?.attempts).toBe(2);
     expect(h.classifier.classify).toHaveBeenCalledTimes(3);
-    expect(h.bookmarks.parents.get('bookmark-1')).toBe('bookmarks-bar');
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
     expect(h.bookmarks.moveCount).toBe(0);
   });
 
@@ -174,7 +174,7 @@ describe('OrganizerService', () => {
 
     await h.organizer.onBookmarkCreated('bookmark-1', bookmarkEvent());
 
-    expect(h.bookmarks.parents.get('bookmark-1')).toBe('bookmarks-bar');
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
     expect(h.bookmarks.moveCount).toBe(0);
     expect((await h.store.load()).reviews['bookmark-1']?.status).toBe('pending');
     expect((await h.store.load()).pendingOperation).toBeUndefined();
@@ -190,7 +190,7 @@ describe('OrganizerService', () => {
 
     await h.organizer.onBookmarkCreated('bookmark-1', bookmarkEvent());
 
-    expect(h.bookmarks.parents.get('bookmark-1')).toBe('bookmarks-bar');
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
     expect(h.bookmarks.moveCount).toBe(0);
     expect((await h.store.load()).reviews['bookmark-1']?.status).toBe('pending');
     expect((await h.store.load()).pendingOperation).toBeUndefined();
@@ -246,7 +246,16 @@ describe('OrganizerService', () => {
     const h = createHarness({ result: { ...MOVE_RESULT, targetFolderId: 'deleted-folder' }, source: 'ai' });
     await h.organizer.onBookmarkCreated('bookmark-1', bookmarkEvent());
 
-    expect(h.bookmarks.parents.get('bookmark-1')).toBe('bookmarks-bar');
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
+    expect((await h.store.load()).jobs['bookmark-1']?.status).toBe('failed');
+  });
+
+  it('AI 返回智能书签目录外的目标时拒绝移动', async () => {
+    const h = createHarness({ result: { ...MOVE_RESULT, targetFolderId: 'user-folder' }, source: 'ai' });
+    await h.organizer.onBookmarkCreated('bookmark-1', bookmarkEvent());
+
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
+    expect(h.bookmarks.moveCount).toBe(0);
     expect((await h.store.load()).jobs['bookmark-1']?.status).toBe('failed');
   });
 
@@ -291,7 +300,7 @@ describe('OrganizerService', () => {
     await h.organizer.onBookmarkCreated('bookmark-1', bookmarkEvent());
     await expect(h.organizer.undoLastMove()).resolves.toBe('LangGraph Agent Guide');
 
-    expect(h.bookmarks.parents.get('bookmark-1')).toBe('bookmarks-bar');
+    expect(h.bookmarks.parents.get('bookmark-1')).toBe('smart-root');
     expect((await h.store.load()).lastUndo).toBeUndefined();
   });
 
@@ -299,7 +308,7 @@ describe('OrganizerService', () => {
     const h = createHarness({ result: MOVE_RESULT, source: 'ai' });
     await h.store.update((state) => {
       state.jobs['bookmark-1'] = {
-        bookmark: { id: 'bookmark-1', title: 'LangGraph Agent Guide', url: 'https://example.com/langgraph', parentId: 'bookmarks-bar' },
+        bookmark: { id: 'bookmark-1', title: 'LangGraph Agent Guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
         status: 'processing', attempts: 0, createdAt: 1, updatedAt: 1,
       };
     });
@@ -323,12 +332,12 @@ describe('OrganizerService', () => {
     h.bookmarks.parents.set('bookmark-1', 'folder-dev');
     await h.store.update((state) => {
       state.jobs['bookmark-1'] = {
-        bookmark: { id: 'bookmark-1', title: 'LangGraph Agent Guide', url: 'https://example.com/langgraph', parentId: 'bookmarks-bar' },
+        bookmark: { id: 'bookmark-1', title: 'LangGraph Agent Guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
         status: 'processing', attempts: 0, createdAt: 1, updatedAt: 1,
       };
       state.pendingOperation = {
         bookmarkId: 'bookmark-1', title: 'LangGraph Agent Guide',
-        fromFolderId: 'bookmarks-bar', toFolderId: 'folder-dev', movedAt: 2,
+        fromFolderId: 'smart-root', toFolderId: 'folder-dev', movedAt: 2,
         operationId: 'op-recovery', state: 'prepared', kind: 'automatic',
       };
     });
@@ -347,7 +356,7 @@ describe('OrganizerService', () => {
     expect(h.bookmarks.moveCount).toBe(0);
     expect(state.pendingOperation).toBeUndefined();
     expect(state.jobs['bookmark-1']?.status).toBe('completed');
-    expect(state.lastUndo).toMatchObject({ fromFolderId: 'bookmarks-bar', toFolderId: 'folder-dev' });
+    expect(state.lastUndo).toMatchObject({ fromFolderId: 'smart-root', toFolderId: 'folder-dev' });
   });
 
   it('缺少 API Key 时持久化等待任务，配置后恢复分类', async () => {
@@ -381,6 +390,8 @@ function createHarness(options: {
 }) {
   const initial = emptyPersistedState();
   initial.settings = { ...DEFAULT_SETTINGS, apiKey: options.apiKey ?? 'test-key' };
+  initial.smartBookmarkRootId = 'smart-root';
+  initial.smartBookmarkInitialized = true;
   const store = new MemoryStateRepository(initial);
   const bookmarks = new FakeBookmarks();
   let now = 1_700_000_000_000;
@@ -411,12 +422,12 @@ function createHarness(options: {
   return { organizer, store, bookmarks, classifier, notifications, hasProviderPermission, setNow: (value: number) => { now = value; } };
 }
 
-function bookmarkEvent(parentId = 'bookmarks-bar'): BookmarkNode {
+function bookmarkEvent(parentId = 'smart-root'): BookmarkNode {
   return { id: 'bookmark-1', title: 'LangGraph Agent Guide', url: 'https://example.com/langgraph', parentId, dateAdded: 1 };
 }
 
 class FakeBookmarks implements BookmarkPort {
-  readonly parents = new Map<string, string>([['bookmark-1', 'bookmarks-bar']]);
+  readonly parents = new Map<string, string>([['bookmark-1', 'smart-root']]);
   readonly createdFolders: BookmarkNode[] = [];
   moveCount = 0;
   failNextMove = false;
@@ -424,8 +435,10 @@ class FakeBookmarks implements BookmarkPort {
   private readonly nodes: BookmarkNode[] = [
     { id: 'root', title: '', children: [
       { id: 'bookmarks-bar', title: 'Bookmarks bar', folderType: 'bookmarks-bar', children: [
-        { id: 'folder-dev', title: 'Development Programming', parentId: 'bookmarks-bar', children: [] },
-        { id: 'bookmark-1', title: 'LangGraph Agent Guide', url: 'https://example.com/langgraph', parentId: 'bookmarks-bar' },
+        { id: 'smart-root', title: 'yuan 的智能书签', parentId: 'bookmarks-bar', children: [
+          { id: 'folder-dev', title: 'Development Programming', parentId: 'smart-root', children: [] },
+          { id: 'bookmark-1', title: 'LangGraph Agent Guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
+        ] },
       ] },
       { id: 'other', title: 'Other bookmarks', folderType: 'other', children: [] },
       { id: 'user-folder', title: 'Personal', parentId: 'bookmarks-bar', children: [] },
@@ -452,6 +465,25 @@ class FakeBookmarks implements BookmarkPort {
   async getFolderPath(id: string): Promise<string | null> { return (await this.getFolders()).find((folder) => folder.id === id)?.path ?? null; }
   async folderExists(id: string): Promise<boolean> { return Boolean(await this.getFolder(id)); }
   async isEligibleRoot(id: string): Promise<boolean> { return ['bookmarks-bar', 'other', 'mobile'].includes((await this.getFolder(id))?.folderType ?? ''); }
+  async isWithinRoot(nodeId: string, rootId: string): Promise<boolean> {
+    if (rootId !== 'smart-root') return false;
+    if (nodeId === rootId) return true;
+    let current = findNode(this.nodes, nodeId);
+    let parentId = this.parents.get(nodeId) ?? current?.parentId;
+    while (parentId) {
+      if (parentId === rootId) return true;
+      current = findNode(this.nodes, parentId);
+      parentId = current?.parentId;
+    }
+    return false;
+  }
+  async getFoldersWithinRoot(rootId: string): Promise<FolderSummary[]> {
+    if (rootId !== 'smart-root') return [];
+    return (await this.getFolders()).filter((folder) => folder.id === 'smart-root' || folder.id === 'folder-dev' || folder.id.startsWith('created-'));
+  }
+  async isValidTargetFolder(targetFolderId: string, rootId: string): Promise<boolean> {
+    return (await this.getFoldersWithinRoot(rootId)).some((folder) => folder.id === targetFolderId);
+  }
   async moveBookmark(bookmarkId: string, targetFolderId: string): Promise<void> {
     if (!await this.folderExists(targetFolderId)) throw new Error('missing folder');
     if (this.failNextMove) {
@@ -474,9 +506,9 @@ class FakeBookmarks implements BookmarkPort {
     return folder;
   }
   addBookmark(id: string): void {
-    const parent = findNode(this.nodes, 'bookmarks-bar');
-    parent?.children?.push({ id, title: `Bookmark ${id}`, url: `https://example.com/${id}`, parentId: 'bookmarks-bar' });
-    this.parents.set(id, 'bookmarks-bar');
+    const parent = findNode(this.nodes, 'smart-root');
+    parent?.children?.push({ id, title: `Bookmark ${id}`, url: `https://example.com/${id}`, parentId: 'smart-root' });
+    this.parents.set(id, 'smart-root');
   }
 }
 

@@ -1,5 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ChromeBookmarkService, enumerateHistoricalBookmarks, type BookmarkApi, type BookmarkNode } from '../services/bookmark.service';
+import {
+  ChromeBookmarkService,
+  enumerateHistoricalBookmarks,
+  getFoldersWithinRoot,
+  isNodeWithinRoot,
+  isValidTargetFolder,
+  SMART_BOOKMARK_DEFAULT_FOLDERS,
+  smartBookmarkOwnerName,
+  type BookmarkApi,
+  type BookmarkNode,
+} from '../services/bookmark.service';
 
 describe('ChromeBookmarkService', () => {
   it('按保护边界枚举历史书签，强制模式才包含自建文件夹后代', () => {
@@ -56,6 +66,93 @@ describe('ChromeBookmarkService', () => {
     };
     await expect(new ChromeBookmarkService(api).moveBookmark('bookmark', 'missing')).rejects.toThrow('目标文件夹');
     expect(api.move).not.toHaveBeenCalled();
+  });
+
+  it('按账号本地部分创建智能根目录和一级默认布局', async () => {
+    const tree: BookmarkNode[] = [{ id: 'root', title: '', children: [
+      { id: 'bar', title: '书签栏', folderType: 'bookmarks-bar', children: [] },
+    ] }];
+    let nextId = 0;
+    const api: BookmarkApi = {
+      getTree: vi.fn(async () => structuredClone(tree)),
+      get: vi.fn(async (id) => {
+        const found = findNode(tree, id);
+        if (!found) throw new Error('Not found');
+        return [found];
+      }),
+      move: vi.fn(async () => tree[0]!),
+      create: vi.fn(async ({ parentId, title }) => {
+        const parent = findNode(tree, parentId);
+        if (!parent) throw new Error('Parent not found');
+        const node = { id: `created-${++nextId}`, title, parentId, children: [] };
+        (parent.children ??= []).push(node);
+        return node;
+      }),
+    };
+    const service = new ChromeBookmarkService(api);
+
+    await expect(service.initializeSmartBookmarkRoot({
+      identity: { getProfileUserInfo: async () => ({ email: '  yuan@example.com ' }) },
+    })).resolves.toMatchObject({ title: 'yuan 的智能书签', created: true, defaultsCreated: SMART_BOOKMARK_DEFAULT_FOLDERS.length });
+    expect(api.create).toHaveBeenCalledTimes(1 + SMART_BOOKMARK_DEFAULT_FOLDERS.length);
+    expect(findNode(tree, 'bar')?.children?.map((node) => node.title)).toEqual(['yuan 的智能书签']);
+    expect(findNode(tree, 'created-1')?.children?.map((node) => node.title)).toEqual([...SMART_BOOKMARK_DEFAULT_FOLDERS]);
+  });
+
+  it('复用唯一同名根目录，邮箱不可用时回退 bookmark，并保持重复初始化幂等', async () => {
+    const tree: BookmarkNode[] = [{ id: 'root', title: '', children: [
+      { id: 'bar', title: '书签栏', folderType: 'bookmarks-bar', children: [
+        { id: 'smart', title: 'bookmark 的智能书签', parentId: 'bar', children: [] },
+      ] },
+    ] }];
+    let nextId = 0;
+    let createCalls = 0;
+    const api: BookmarkApi = {
+      getTree: vi.fn(async () => structuredClone(tree)),
+      get: vi.fn(async (id) => {
+        const found = findNode(tree, id);
+        if (!found) throw new Error('Not found');
+        return [found];
+      }),
+      move: vi.fn(async () => tree[0]!),
+      create: vi.fn(async ({ parentId, title }) => {
+        const parent = findNode(tree, parentId);
+        if (!parent) throw new Error('Parent not found');
+        createCalls += 1;
+        const node = { id: `created-${++nextId}`, title, parentId, children: [] };
+        (parent.children ??= []).push(node);
+        return node;
+      }),
+    };
+    const service = new ChromeBookmarkService(api);
+    const identity = { getProfileUserInfo: async () => { throw new Error('not signed in'); } };
+
+    await expect(service.initializeSmartBookmarkRoot({ identity, initializeDefaults: true })).resolves.toMatchObject({ rootId: 'smart', title: 'bookmark 的智能书签', created: false });
+    const callsAfterFirstInitialization = createCalls;
+    await expect(service.initializeSmartBookmarkRoot({ storedRootId: 'smart', identity, initializeDefaults: false })).resolves.toMatchObject({ rootId: 'smart', created: false, defaultsCreated: 0 });
+    expect(createCalls).toBe(callsAfterFirstInitialization);
+    expect(smartBookmarkOwnerName('')).toBe('bookmark');
+  });
+
+  it('边界 helper 只返回智能根目录内的可编辑目录', () => {
+    const tree: BookmarkNode[] = [{ id: 'root', title: '', children: [
+      { id: 'smart', title: '智能书签', parentId: 'bar', children: [
+        { id: 'dev', title: '开发', parentId: 'smart', children: [
+          { id: 'bookmark', title: '页面', url: 'https://example.com', parentId: 'dev' },
+        ] },
+        { id: 'managed', title: '托管', parentId: 'smart', unmodifiable: 'managed', children: [
+          { id: 'blocked', title: '禁止', url: 'https://example.com/blocked', parentId: 'managed' },
+        ] },
+      ] },
+      { id: 'bar', title: '书签栏', folderType: 'bookmarks-bar', children: [] },
+    ] }];
+
+    expect(isNodeWithinRoot(tree, 'smart', 'smart')).toBe(true);
+    expect(isNodeWithinRoot(tree, 'bookmark', 'smart')).toBe(true);
+    expect(isNodeWithinRoot(tree, 'blocked', 'smart')).toBe(false);
+    expect(isValidTargetFolder(tree, 'dev', 'smart')).toBe(true);
+    expect(isValidTargetFolder(tree, 'managed', 'smart')).toBe(false);
+    expect(getFoldersWithinRoot(tree, 'smart').map((folder) => folder.id)).toEqual(['smart', 'dev']);
   });
 });
 
