@@ -97,4 +97,3 @@ export class ScanService {
     await this.deps.store.update((state) => refreshHistoricalScan(state, scanId, this.now()));
   }
 }
-
