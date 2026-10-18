@@ -47,6 +47,7 @@ function makeServices() {
     undoHistoricalLast: 0,
     startHistoricalScan: 0,
     approveAllHistoricalReviews: [] as (string | undefined)[],
+    generateMetadata: [] as string[],
   };
   const organizer: OrganizerFacade = {
     getDashboardState: async () => { calls.getDashboardState += 1; return dashboard; },
@@ -67,7 +68,8 @@ function makeServices() {
     clearSettingsDraft: async () => { calls.clearSettingsDraft += 1; },
   };
   const normalizeBaseUrl = vi.fn((baseUrl: string) => `${baseUrl}/normalized`);
-  const services: RouterServices = { organizer, scan, settings, normalizeBaseUrl };
+  const metadata = { generate: async (bookmarkId: string) => { calls.generateMetadata.push(bookmarkId); return { summary: 'Summary', tags: ['tag'], generatedAt: 10 }; } };
+  const services: RouterServices = { organizer, scan, settings, metadata, normalizeBaseUrl };
   return { calls, services, organizer, scan, settings, normalizeBaseUrl };
 }
 
@@ -82,6 +84,8 @@ describe('background runtime router', () => {
       { type: 'settings-draft:set', draft: { extra: true } },
       { type: 'review:approve', id: '' },
       { type: 'scan:approve-all', scanId: '' },
+      { type: 'bookmark:metadata:generate', bookmarkId: '' },
+      { type: 'bookmark:metadata:generate', bookmarkId: 'bookmark-1', extra: true },
       { type: 'unknown' },
     ];
 
@@ -107,6 +111,7 @@ describe('background runtime router', () => {
       { type: 'scan:start' },
       { type: 'scan:approve-all', scanId: 'scan-1' },
       { type: 'undo:historical-last' },
+      { type: 'bookmark:metadata:generate', bookmarkId: 'bookmark-1' },
     ];
     for (const request of requests) expect(RequestSchema.safeParse(request).success).toBe(true);
 
@@ -123,6 +128,7 @@ describe('background runtime router', () => {
     await expect(handleRequest(requests[10]!, services)).resolves.toEqual({ approved: true, count: 2 });
     await expect(handleRequest({ type: 'scan:approve-all' }, services)).resolves.toEqual({ approved: true, count: 2 });
     await expect(handleRequest(requests[11]!, services)).resolves.toEqual({ undone: true, count: 2 });
+    await expect(handleRequest(requests[12]!, services)).resolves.toEqual({ generated: true, metadata: { summary: 'Summary', tags: ['tag'], generatedAt: 10 } });
 
     expect(calls.updateSettings).toEqual([{ model: 'new-model', apiKey: 'secret' }]);
     expect(calls.getDashboardState).toBe(2);
@@ -135,6 +141,7 @@ describe('background runtime router', () => {
     expect(calls.undoHistoricalLast).toBe(1);
     expect(calls.startHistoricalScan).toBe(1);
     expect(calls.approveAllHistoricalReviews).toEqual(['scan-1', undefined]);
+    expect(calls.generateMetadata).toEqual(['bookmark-1']);
   });
 
   it('normalizes a settings copy and keeps API keys out of responses', async () => {

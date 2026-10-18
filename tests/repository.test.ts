@@ -114,4 +114,29 @@ describe('ChromeStateRepository', () => {
     expect(loaded.historicalScan).toMatchObject({ id: 'scan-1', status: 'awaiting_review', coveredIds: ['bookmark-1', 'bookmark-2'] });
     expect(loaded.lastHistoricalUndo?.moved).toHaveLength(1);
   });
+
+  it('normalizes legacy and malformed bookmark metadata without changing the storage version', async () => {
+    const values: Record<string, unknown> = {
+      [STORAGE_KEY]: {
+        version: 1,
+        settings: { apiKey: 'fixture' },
+        bookmarkMetadata: {
+          valid: { summary: '  Saved summary  ', tags: [' TypeScript ', 'AI'], generatedAt: 42 },
+          duplicate: { summary: 'Summary', tags: ['Tag', 'tag'], generatedAt: 43 },
+          oversized: { summary: 'x'.repeat(501), tags: ['tag'], generatedAt: 44 },
+          malformed: { summary: 'Summary', tags: ['tag'], generatedAt: 'now' },
+        },
+      },
+    };
+    const storage: LocalStorageArea = {
+      get: vi.fn(async (key) => ({ [key]: values[key] })),
+      set: vi.fn(async (items) => Object.assign(values, items)),
+    };
+
+    const loaded = await new ChromeStateRepository(storage).load();
+
+    expect(loaded.version).toBe(1);
+    expect(loaded.bookmarkMetadata).toEqual({ valid: { summary: 'Saved summary', tags: ['TypeScript', 'AI'], generatedAt: 42 } });
+    expect(storage.set).not.toHaveBeenCalled();
+  });
 });

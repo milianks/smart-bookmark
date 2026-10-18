@@ -235,3 +235,74 @@ await organizer.approveAllHistoricalReviews(scanId); // sequential live checks a
 ```
 
 Separate enumeration/classification from mutation, persist before work, and route every approved move through the existing organizer recovery contract.
+
+## Scenario: Manual bookmark summary and tags
+
+### 1. Scope / Trigger
+
+Use this contract when adding user-triggered summary/tag generation for an existing bookmark. The background owns provider calls and persistence; Popup and Review pages only send runtime messages and render projected metadata.
+
+### 2. Signatures
+
+- `BookmarkMetadataService.generate(bookmarkId: string): Promise<BookmarkMetadata>`
+- `ClassifierProvider.generateMetadata(input: BookmarkMetadataInput, config: ProviderConfig): Promise<SummaryTagResult>`
+- Runtime request: `{ type: 'bookmark:metadata:generate'; bookmarkId: string }`
+- Persisted shape: `bookmarkMetadata: Record<string, BookmarkMetadata>`, where each record contains `summary`, `tags`, and `generatedAt`.
+
+### 3. Contracts
+
+- Resolve one live bookmark and its current folder path. Send only `{ title, url, domain, currentFolder }` to the configured provider.
+- Require the configured API key and permission for the configured provider origin before making the request.
+- Accept only a strict object with a non-empty summary of at most 500 characters and 1-8 unique tags of at most 32 characters each. Reject unknown fields.
+- Persist only after validation, replacing only the selected bookmark's metadata. Normalize legacy state without `bookmarkMetadata` to an empty map.
+- Deduplicate concurrent requests for the same bookmark ID; requests for different IDs may proceed independently.
+- Project metadata only onto matching `recentJobs`, `pendingReviews`, and `historicalReviews` items. Do not expose the full metadata index, API key, prompt, raw provider response, or unbounded provider data.
+- The service must not call bookmark or folder mutation APIs. Do not add webpage access, static host permissions, dependencies, or automatic generation.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Malformed runtime request or empty/oversized bookmark ID | Reject before dispatch |
+| API key missing or provider-origin permission absent | Return a bounded user-facing error; do not call the provider or replace existing metadata |
+| Bookmark or containing folder no longer exists | Fail safely; preserve existing metadata |
+| Provider request fails or returns invalid JSON/schema/extra fields | Return a sanitized error; preserve existing metadata |
+| Valid provider response | Persist one validated record for the selected bookmark and return it |
+| Concurrent request for the same bookmark ID | Share the in-flight result; do not issue duplicate provider calls |
+
+### 5. Good / Base / Bad Cases
+
+- **Good**: A user generates a summary for a live bookmark; only the allowed metadata fields are sent, strict output is validated, local state is updated, and the bookmark remains in the same folder.
+- **Base**: The provider origin is not permitted; the UI shows an error and any previous summary/tag record remains visible.
+- **Bad**: Provider output contains extra fields, oversized values, or duplicate tags; reject it without persisting provider data or changing bookmark state.
+
+### 6. Tests Required
+
+- Assert prompt input contains only title, URL, domain, and folder path; validate strict output bounds, uniqueness, and extra-field rejection.
+- Assert legacy state normalization, metadata persistence, and malformed-record dropping without changing storage version.
+- Assert missing permission/provider failure/invalid output preserve previous metadata; assert same-ID concurrency deduplicates and no bookmark mutation method is called.
+- Assert strict runtime request routing and dashboard projection onto matching job/review items without exposing the complete metadata map.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```ts
+const response = await provider.generateMetadata(bookmark, settings);
+state.bookmarkMetadata[bookmark.id] = response;
+await chrome.bookmarks.move(bookmark.id, { parentId: response.folderId });
+```
+
+This sends an unrestricted object, trusts unvalidated output, and couples metadata generation to bookmark mutation.
+
+#### Correct
+
+```ts
+const input = { title, url, domain, currentFolder };
+const result = SummaryTagResultSchema.parse(await provider.generateMetadata(input, config));
+await store.update((state) => {
+  state.bookmarkMetadata[bookmarkId] = { ...result, generatedAt: now() };
+});
+```
+
+This persists only bounded validated metadata for the requested bookmark and leaves all bookmark/folder state untouched.

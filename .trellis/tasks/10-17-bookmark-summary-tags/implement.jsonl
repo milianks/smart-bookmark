@@ -1,0 +1,6 @@
+{"file":".trellis/spec/backend/extension-runtime-contract.md","reason":"Preserve background-owned provider, runtime-message, persistence, permission, and bookmark-mutation boundaries while adding metadata generation."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Define backward-compatible local metadata normalization and StateRepository usage."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Enforce strict provider output validation, bounded data, secret handling, and service test patterns."}
+{"file":".trellis/spec/frontend/extension-ui-contract.md","reason":"Keep metadata actions behind typed runtime messages and preserve page/background ownership."}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"Reuse shared controls and safe text rendering for summary/tag UI."}
+{"file":".trellis/spec/frontend/state-management.md","reason":"Keep durable metadata in background state and transient generation state local to pages."}

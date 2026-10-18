@@ -11,6 +11,7 @@ export function ReviewApp() {
   const [busyId, setBusyId] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [metadataBusyId, setMetadataBusyId] = useState('');
   const [scanId, setScanId] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
 
@@ -71,6 +72,13 @@ export function ReviewApp() {
     } catch (reason) { setError(messageOf(reason)); }
     finally { setBatchBusy(false); }
   }
+  async function generateMetadata(bookmarkId: string) {
+    setMetadataBusyId(bookmarkId);
+    setError('');
+    try { unwrapResponse(await sendMessage({ type: 'bookmark:metadata:generate', bookmarkId })); setNotice('摘要与标签已生成。'); await refresh(); }
+    catch (reason) { setError(messageOf(reason)); }
+    finally { setMetadataBusyId(''); }
+  }
 
   return <main className="mx-auto max-w-5xl space-y-6 px-5 py-8 sm:px-8">
     <header>
@@ -93,14 +101,17 @@ export function ReviewApp() {
           </button>)}
         </div>
       </Card>
-      {active && <ReviewDetail item={active} busy={busyId === active.id} onApprove={() => void decide(active, 'approve')} onReject={() => void decide(active, 'reject')} />}
+      {active && <ReviewDetail item={active} metadata={active.metadata} busy={busyId === active.id} metadataBusy={metadataBusyId === active.bookmarkId} onGenerateMetadata={() => void generateMetadata(active.bookmarkId)} onApprove={() => void decide(active, 'approve')} onReject={() => void decide(active, 'reject')} />}
     </div>}
   </main>;
 }
 
-function ReviewDetail({ item, busy, onApprove, onReject }: {
+function ReviewDetail({ item, metadata, busy, metadataBusy, onGenerateMetadata, onApprove, onReject }: {
   item: ReviewItem;
+  metadata?: ReviewItem['metadata'];
   busy: boolean;
+  metadataBusy: boolean;
+  onGenerateMetadata: () => void;
   onApprove: () => void;
   onReject: () => void;
 }) {
@@ -114,9 +125,9 @@ function ReviewDetail({ item, busy, onApprove, onReject }: {
     <CardHeader className="flex flex-wrap items-start justify-between gap-3"><div><Badge className="bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300">{sourceLabel}</Badge><h2 className="mt-3 text-lg font-semibold">{item.title}</h2></div><span className="text-sm text-slate-500">置信度 {(item.classification.confidence * 100).toFixed(0)}%</span></CardHeader>
     <CardContent className="space-y-5">
       <div><p className="text-xs font-medium uppercase tracking-wide text-slate-500">网页地址</p><a href={item.url} target="_blank" rel="noreferrer" className="mt-1 block break-all text-sm text-violet-700 underline decoration-violet-200 underline-offset-4 dark:text-violet-300">{item.url}</a></div>
+      {metadata && <div className="rounded-2xl bg-emerald-50 p-4 dark:bg-emerald-950/30"><p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">摘要与标签</p><p className="mt-1 text-sm leading-6">{metadata.summary}</p><div className="mt-2 flex flex-wrap gap-1">{metadata.tags.map((tag) => <span key={tag} className="rounded bg-white px-2 py-1 text-xs dark:bg-slate-900">#{tag}</span>)}</div></div>}
       <div className="rounded-2xl bg-slate-50 p-4 dark:bg-slate-950"><p className="text-xs font-medium text-slate-500">推荐操作</p><p className="mt-1 text-sm font-semibold">{recommendation}</p><p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">{item.classification.reason}</p></div>
-      <p className="text-xs leading-5 text-slate-500">只有点击确认后才会执行目录创建或移动。拒绝后书签保持当前所在位置。</p>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2"><Button variant="secondary" disabled={metadataBusy || busy} onClick={onGenerateMetadata}>{metadataBusy ? '生成中…' : metadata ? '重新生成摘要与标签' : '生成摘要与标签'}</Button>
         {item.status !== 'pending' && <Badge className="bg-slate-100 text-slate-600">{reviewStatusLabel(item.status)}</Badge>}
         {item.status === 'pending' && item.classification.action !== 'keep' && <Button disabled={busy} onClick={onApprove}>{busy ? '正在处理…' : item.classification.action === 'suggest_folder' ? '创建文件夹并归档' : '移动到推荐文件夹'}</Button>}
         {item.status === 'pending' && <Button variant="secondary" disabled={busy} onClick={onReject}>保留原位</Button>}

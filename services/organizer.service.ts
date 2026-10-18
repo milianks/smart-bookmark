@@ -228,11 +228,14 @@ export class OrganizerService {
       settings: { ...settings, hasApiKey: configured },
       pendingReviews: Object.values(state.reviews)
         .filter((item) => item.status === 'pending' || item.status === 'approving')
+        .map((item) => ({ ...item, ...(state.bookmarkMetadata[item.bookmarkId] ? { metadata: state.bookmarkMetadata[item.bookmarkId] } : {}) }))
         .sort((a, b) => b.createdAt - a.createdAt),
       historicalReviews: Object.values(state.reviews)
         .filter((item) => Boolean(item.scanId))
+        .map((item) => ({ ...item, ...(state.bookmarkMetadata[item.bookmarkId] ? { metadata: state.bookmarkMetadata[item.bookmarkId] } : {}) }))
         .sort((a, b) => b.createdAt - a.createdAt),
       recentJobs: Object.values(state.jobs)
+        .map((job) => ({ ...job, ...(state.bookmarkMetadata[job.bookmark.id] ? { metadata: state.bookmarkMetadata[job.bookmark.id] } : {}) }))
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 8),
       activities: state.activities.slice(-20).reverse(),

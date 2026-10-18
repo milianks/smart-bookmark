@@ -94,6 +94,31 @@ describe('OpenAICompatibleProvider', () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe('https://aiaaa.cc/v1/chat/completions');
   });
 
+  it('为书签元数据发送仅含允许字段的提示，并严格校验有界输出', async () => {
+    const metadata = { summary: 'A concise summary', tags: ['docs', 'typescript'] };
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify(metadata) } }],
+    }), { status: 200 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    await expect(provider.generateMetadata!({
+      title: 'TypeScript guide', url: 'https://example.com/guide', domain: 'example.com', currentFolder: 'Bookmarks / Dev',
+    }, { ...baseConfig, protocol: 'openai-chat-completions' })).resolves.toEqual(metadata);
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)) as { messages: Array<{ content: string }> };
+    expect(body.messages[1]?.content).toContain('TypeScript guide');
+    expect(body.messages[1]?.content).toContain('Bookmarks / Dev');
+    expect(body.messages[1]?.content).not.toContain('pageContent');
+
+    const invalidProvider = new OpenAICompatibleProvider(vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ ...metadata, debug: 'secret response' }) } }],
+    }), { status: 200 })));
+    await expect(invalidProvider.generateMetadata!({
+      title: 'Title', url: 'https://example.com', domain: 'example.com', currentFolder: 'Bookmarks',
+    }, { ...baseConfig, protocol: 'openai-chat-completions' })).rejects.toMatchObject({
+      name: 'ProviderError', retryable: false, message: 'AI 摘要标签结果不符合安全格式',
+    });
+  });
+
   it('测试 AI 使用合成分类并拒绝无效目的文件夹', async () => {
     const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({

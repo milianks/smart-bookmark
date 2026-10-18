@@ -1,4 +1,4 @@
-import type { DashboardState, Settings, SettingsDraft } from './domain';
+import type { BookmarkMetadata, DashboardState, Settings, SettingsDraft } from './domain';
 
 export type RuntimeRequest =
   | { type: 'state:get' }
@@ -12,7 +12,8 @@ export type RuntimeRequest =
   | { type: 'undo:last' }
   | { type: 'scan:start' }
   | { type: 'scan:approve-all'; scanId?: string }
-  | { type: 'undo:historical-last' };
+  | { type: 'undo:historical-last' }
+  | { type: 'bookmark:metadata:generate'; bookmarkId: string };
 
 export type RuntimeData =
   | DashboardState
@@ -24,7 +25,8 @@ export type RuntimeData =
   | { undone: true; title: string }
   | { started: true; scanId: string; eligibleTotal: number }
   | { approved: true; count: number }
-  | { undone: true; count: number };
+  | { undone: true; count: number }
+  | { generated: true; metadata: BookmarkMetadata };
 
 export type RuntimeResponse =
   | { ok: true; data: RuntimeData }

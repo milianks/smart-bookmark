@@ -5,15 +5,21 @@ import { OpenAICompatibleProvider } from '../lib/ai/openai-compatible';
 import { ChromeStateRepository } from '../lib/storage/repository';
 import { ChromeBookmarkService } from '../services/bookmark.service';
 import { ClassificationService } from '../services/classifier.service';
+import { BookmarkMetadataService } from '../services/bookmark-metadata.service';
 import { ChromeNotificationService } from '../services/notification.service';
 import { OrganizerService } from '../services/organizer.service';
 import { ScanService } from '../services/scan.service';
 import { SettingsService } from '../services/settings.service';
-
 export default defineBackground(() => {
   const store = new ChromeStateRepository();
   const bookmarks = new ChromeBookmarkService();
   const provider = new OpenAICompatibleProvider();
+  const metadata = new BookmarkMetadataService({
+    bookmarks, store, provider,
+    hasProviderPermission: async (baseUrl) => {
+      try { return await chrome.permissions.contains({ origins: [originPermissionPattern(baseUrl)] }); } catch { return false; }
+    },
+  });
   const classifier = new ClassificationService(provider, store);
   const notifications = new ChromeNotificationService();
   const organizer = new OrganizerService({
@@ -79,7 +85,7 @@ export default defineBackground(() => {
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const parsed = RequestSchema.safeParse(message);
     if (!parsed.success) return false;
-    void handleRequest(parsed.data, { organizer, scan, settings, normalizeBaseUrl })
+    void handleRequest(parsed.data, { organizer, scan, settings, metadata, normalizeBaseUrl })
       .then((data) => sendResponse({ ok: true, data }))
       .catch((error: unknown) => sendResponse({
         ok: false,

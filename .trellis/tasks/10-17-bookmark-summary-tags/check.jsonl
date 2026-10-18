@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/extension-runtime-contract.md","reason":"Review metadata requests, provider validation, stale-bookmark handling, and unchanged move/scan safety."}
+{"file":".trellis/spec/backend/database-guidelines.md","reason":"Review persisted metadata normalization, bounded records, and legacy state compatibility."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Review secrets, prompt/provider payload boundaries, retry behavior, and test assertions."}
+{"file":".trellis/spec/frontend/extension-ui-contract.md","reason":"Review typed UI actions, dashboard projections, loading/error states, and no direct storage/bookmark access."}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"Review summary/tag controls for accessibility, safe text rendering, and no unsupported browser permissions."}

@@ -29,6 +29,7 @@ export const RequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('scan:start') }).strict(),
   z.object({ type: z.literal('scan:approve-all'), scanId: z.string().min(1).optional() }).strict(),
   z.object({ type: z.literal('undo:historical-last') }).strict(),
+  z.object({ type: z.literal('bookmark:metadata:generate'), bookmarkId: z.string().trim().min(1).max(200) }).strict(),
 ]);
 
 export interface OrganizerFacade {
@@ -52,10 +53,15 @@ export interface SettingsFacade {
   clearSettingsDraft(): Promise<void>;
 }
 
+export interface MetadataFacade {
+  generate(bookmarkId: string): Promise<unknown>;
+}
+
 export interface RouterServices {
   organizer: OrganizerFacade;
   scan: ScanFacade;
   settings: SettingsFacade;
+  metadata: MetadataFacade;
   normalizeBaseUrl: (baseUrl: string) => string;
 }
 
@@ -89,5 +95,6 @@ export async function handleRequest(request: RuntimeRequest, services: RouterSer
     case 'scan:start': return { started: true, ...(await scan.startHistoricalScan()) };
     case 'scan:approve-all': return { approved: true, count: await scan.approveAllHistoricalReviews(request.scanId) };
     case 'undo:historical-last': return { undone: true, count: await organizer.undoHistoricalLast() };
+    case 'bookmark:metadata:generate': return { generated: true, metadata: await services.metadata.generate(request.bookmarkId) };
   }
 }

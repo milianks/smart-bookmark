@@ -64,10 +64,27 @@ function normalizeState(input: Partial<PersistedState>): PersistedState {
     activities: Array.isArray(input.activities) ? input.activities.slice(-100) : [],
     historicalScan: normalizeHistoricalScan(input.historicalScan),
     lastHistoricalUndo: normalizeHistoricalUndo(input.lastHistoricalUndo),
+    bookmarkMetadata: normalizeBookmarkMetadata(input.bookmarkMetadata),
     ...(SettingsDraftSchema.safeParse(input.settingsDraft).success
       ? { settingsDraft: SettingsDraftSchema.parse(input.settingsDraft) }
       : {}),
   };
+}
+
+function normalizeBookmarkMetadata(input: unknown): PersistedState['bookmarkMetadata'] {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const result: PersistedState['bookmarkMetadata'] = {};
+  for (const [id, value] of Object.entries(input)) {
+    if (!id || typeof value !== 'object' || value === null) continue;
+    const candidate = value as Record<string, unknown>;
+    if (typeof candidate.summary !== 'string' || candidate.summary.trim().length === 0 || candidate.summary.length > 500) continue;
+    if (!Array.isArray(candidate.tags) || candidate.tags.length > 8 || candidate.tags.some((tag) => typeof tag !== 'string' || tag.trim().length === 0 || tag.length > 32)) continue;
+    const tags = candidate.tags.map((tag) => tag.trim());
+    if (new Set(tags.map((tag) => tag.toLocaleLowerCase())).size !== tags.length) continue;
+    if (typeof candidate.generatedAt !== 'number' || !Number.isFinite(candidate.generatedAt) || candidate.generatedAt < 0) continue;
+    result[id] = { summary: candidate.summary.trim(), tags, generatedAt: candidate.generatedAt };
+  }
+  return result;
 }
 
 function normalizeHistoricalScan(input: unknown): HistoricalScanState | undefined {

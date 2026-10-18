@@ -1,5 +1,5 @@
-import { ClassificationResultSchema, type ClassificationResult, type FolderSummary } from '../../types/domain';
-import { buildClassificationMessages, type ClassificationInput } from './prompts';
+import { ClassificationResultSchema, SummaryTagResultSchema, type ClassificationResult, type FolderSummary, type SummaryTagResult } from '../../types/domain';
+import { buildClassificationMessages, buildMetadataMessages, type BookmarkMetadataInput, type ClassificationInput } from './prompts';
 import { normalizeBaseUrl, providerUrl, type ProviderConfig } from './provider-config';
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -15,6 +15,7 @@ export class ProviderError extends Error {
 
 export interface ClassifierProvider {
   classify(input: ClassificationInput, folders: FolderSummary[], config: ProviderConfig): Promise<ClassificationResult>;
+  generateMetadata?(input: BookmarkMetadataInput, config: ProviderConfig): Promise<SummaryTagResult>;
   test(config: ProviderConfig): Promise<void>;
 }
 
@@ -36,6 +37,14 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     const parsed = parseJsonContent(content);
     const result = ClassificationResultSchema.safeParse(parsed);
     if (!result.success) throw new ProviderError('AI 分类结果不符合安全格式，书签已保留原位', false);
+    return result.data;
+  }
+
+  async generateMetadata(input: BookmarkMetadataInput, config: ProviderConfig): Promise<SummaryTagResult> {
+    const payload = await this.request(config, buildRequestBody(config, buildMetadataMessages(input)));
+    const parsed = parseJsonContent(extractClassificationText(payload, config.protocol));
+    const result = SummaryTagResultSchema.safeParse(parsed);
+    if (!result.success) throw new ProviderError('AI 摘要标签结果不符合安全格式', false);
     return result.data;
   }
 

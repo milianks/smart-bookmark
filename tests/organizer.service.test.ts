@@ -105,6 +105,29 @@ describe('OrganizerService', () => {
     settings = new SettingsService({ store, classifier, hasProviderPermission: async () => true, afterUpdate: () => organizer.resume() });
   });
 
+  it('projects persisted metadata only onto matching recent jobs and review items', async () => {
+    const metadata = { summary: 'Saved summary', tags: ['docs'], generatedAt: 10 };
+    await store.update((state) => {
+      state.bookmarkMetadata.b1 = metadata;
+      state.bookmarkMetadata.unrelated = { summary: 'Unrelated', tags: ['other'], generatedAt: 11 };
+      state.jobs.b1 = {
+        bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'bar' },
+        status: 'completed', attempts: 1, createdAt: 1, updatedAt: 2,
+      };
+      state.reviews.review1 = {
+        id: 'review1', bookmarkId: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph',
+        sourceParentId: 'bar', classification: result, source: 'ai', createdAt: 3, status: 'pending',
+      };
+    });
+
+    const dashboard = await organizer.getDashboardState();
+
+    expect(dashboard.recentJobs[0]?.metadata).toEqual(metadata);
+    expect(dashboard.pendingReviews[0]?.metadata).toEqual(metadata);
+    expect(dashboard).not.toHaveProperty('bookmarkMetadata');
+    expect(JSON.stringify(dashboard)).not.toContain('Unrelated');
+  });
+
   it('自动移动高置信度的已有目录建议，并保存撤销记录', async () => {
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);

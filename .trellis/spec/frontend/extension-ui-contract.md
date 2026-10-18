@@ -36,3 +36,9 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 - Historical scan status `scanning` and `awaiting_review` disable the start control. Review pages may show per-item status and a guarded approve-all action; refresh dashboard state after every mutation.
 - The background may return `historicalReviews` for status display, but must omit scan internals (`coveredIds`, force flags), API keys, provider payloads, and raw errors.
 - Batch actions must expose `role="status"` success text and `role="alert"` errors. Stale/manual-move outcomes remain visible as item status rather than disappearing silently.
+
+## Manual bookmark metadata UI
+
+- Popup recent bookmark cards and Review detail may render optional persisted summary/tag metadata projected onto matching `recentJobs`, `pendingReviews`, and `historicalReviews` items by bookmark ID.
+- Generate and regenerate actions use `bookmark:metadata:generate`; pages keep only per-bookmark busy state and transient success/error text, then refresh `state:get` after success.
+- Show asynchronous errors with `role="alert"` and success with `role="status"`. UI must not read extension storage or call bookmark mutation APIs.

@@ -26,6 +26,20 @@ export const ClassificationResultSchema = z.discriminatedUnion('action', [
 ]);
 
 export type ClassificationResult = z.infer<typeof ClassificationResultSchema>;
+export const SummaryTagResultSchema = z.object({
+  summary: z.string().trim().min(1).max(500),
+  tags: z.array(z.string().trim().min(1).max(32)).min(1).max(8),
+}).strict().superRefine((value, context) => {
+  const normalized = value.tags.map((tag) => tag.toLocaleLowerCase());
+  if (new Set(normalized).size !== normalized.length) {
+    context.addIssue({ code: 'custom', message: 'tags must be unique', path: ['tags'] });
+  }
+});
+export const BookmarkMetadataSchema = SummaryTagResultSchema.extend({
+  generatedAt: z.number().finite().nonnegative(),
+}).strict();
+export type SummaryTagResult = z.infer<typeof SummaryTagResultSchema>;
+export type BookmarkMetadata = z.infer<typeof BookmarkMetadataSchema>;
 export type ClassificationSource = 'cache' | 'rule' | 'ai';
 export type OrganizerMode = 'automatic' | 'confirm';
 export const ProviderProtocolSchema = z.enum(['anthropic-messages', 'openai-chat-completions', 'openai-responses']);
@@ -100,6 +114,7 @@ export interface BookmarkJob {
   classification?: ClassificationResult;
   classificationSource?: ClassificationSource;
   scanId?: string;
+  metadata?: BookmarkMetadata;
 }
 
 export type ReviewStatus = 'pending' | 'approving' | 'approved' | 'rejected' | 'stale';
@@ -118,6 +133,7 @@ export interface ReviewItem {
   status: ReviewStatus;
   targetFolderId?: string;
   scanId?: string;
+  metadata?: BookmarkMetadata;
 }
 
 export type HistoricalScanStatus = 'idle' | 'scanning' | 'awaiting_review' | 'completed' | 'failed';
@@ -203,6 +219,7 @@ export interface PersistedState {
   settingsDraft?: SettingsDraft;
   historicalScan?: HistoricalScanState;
   lastHistoricalUndo?: HistoricalBatchUndoRecord;
+  bookmarkMetadata: Record<string, BookmarkMetadata>;
 }
 
 export interface HistoricalScanSummary extends Omit<HistoricalScanState, 'coveredIds' | 'forceOrganize'> {
@@ -236,4 +253,5 @@ export const emptyPersistedState = (): PersistedState => ({
   cache: {},
   activities: [],
   historicalScan: undefined,
+  bookmarkMetadata: {},
 });
