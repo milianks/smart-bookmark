@@ -217,3 +217,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 10: 完成书签摘要与标签功能
+<!-- trellis-session: v=2 fp=292e8954c7a649f3 -->
+
+**Date**: 2026-10-18
+**Task**: 完成书签摘要与标签功能
+**Branch**: `refactor/bookmark-architecture`
+
+### Summary
+
+完成 P2 手动摘要标签生成与持久化；加入严格 Provider schema、后台权限检查、同书签并发去重、失败保留旧数据及 Popup/Review 展示。pnpm typecheck、92 项测试、pnpm build、diff-check 与任务上下文校验通过。手工 Chrome smoke 未执行；原有 .gitignore 改动保留。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ce9a881` | feat(metadata): add bookmark summaries and tags |
+
+### Status
+
+[OK] **Completed**
