@@ -154,6 +154,28 @@ describe('ChromeBookmarkService', () => {
     expect(isValidTargetFolder(tree, 'managed', 'smart')).toBe(false);
     expect(getFoldersWithinRoot(tree, 'smart').map((folder) => folder.id)).toEqual(['smart', 'dev']);
   });
+
+  it('智能根目录摘要只携带最多三条有界 HTTP 书签样例', () => {
+    const longTitle = '标题'.repeat(200);
+    const longUrl = `https://example.com/${'path/'.repeat(200)}`;
+    const tree: BookmarkNode[] = [{ id: 'root', title: '', children: [
+      { id: 'smart', title: '智能书签', parentId: 'bar', children: [
+        { id: 'dev', title: '开发', parentId: 'smart', children: [
+          { id: 'one', title: 'React', url: 'https://react.dev/reference/react', parentId: 'dev' },
+          { id: 'two', title: longTitle, url: longUrl, parentId: 'dev' },
+          { id: 'three', title: 'Skip me', url: 'javascript:alert(1)', parentId: 'dev' },
+          { id: 'four', title: 'Hooks', url: 'https://react.dev/reference/hooks', parentId: 'dev' },
+          { id: 'five', title: 'Router', url: 'https://react.dev/reference/router', parentId: 'dev' },
+        ] },
+      ] },
+      { id: 'bar', title: '书签栏', folderType: 'bookmarks-bar', children: [] },
+    ] }];
+
+    const [folder] = getFoldersWithinRoot(tree, 'smart').filter((item) => item.id === 'dev');
+    expect(folder?.samples).toHaveLength(3);
+    expect(folder?.samples?.every((sample) => sample.title.length <= 160 && sample.url.length <= 512 && sample.hostname.length <= 253)).toBe(true);
+    expect(folder?.samples?.map((sample) => sample.hostname)).toEqual(['react.dev', 'example.com', 'react.dev']);
+  });
 });
 
 function findNode(nodes: BookmarkNode[], id: string): BookmarkNode | undefined {

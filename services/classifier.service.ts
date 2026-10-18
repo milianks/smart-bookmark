@@ -10,7 +10,7 @@ import { normalizedUrl, stableFingerprint } from '../lib/utils/ids';
 import type { ClassificationInput } from '../lib/ai/prompts';
 import type { ClassifierProvider } from '../lib/ai/openai-compatible';
 import { ProviderError } from '../lib/ai/openai-compatible';
-import { classifyWithRules } from '../lib/ai/rule-classifier';
+import { classifyWithRules, rankFolderCandidates } from '../lib/ai/rule-classifier';
 import { normalizeBaseUrl } from '../lib/ai/provider-config';
 
 export class PermissionRequiredError extends Error {
@@ -43,7 +43,7 @@ export class ClassificationService implements ClassifierPort {
     hasProviderPermission: boolean,
   ): Promise<ClassifiedResult> {
     if (!settings.apiKey.trim()) throw new ProviderError('请先在设置中配置 API Key。', false);
-    const cacheKey = makeCacheKey(input.url, folders, settings);
+    const cacheKey = makeCacheKey(input, folders, settings);
     const snapshot = await this.store.load();
     const cached = snapshot.cache[cacheKey];
     if (cached && resultReferencesFolders(cached.result, folders)) {
@@ -60,7 +60,8 @@ export class ClassificationService implements ClassifierPort {
     }
     if (!hasProviderPermission) throw new PermissionRequiredError();
 
-    const result = await this.provider.classify(input, folders, {
+    const providerFolders = rankFolderCandidates(input, folders);
+    const result = await this.provider.classify(input, providerFolders, {
       protocol: settings.protocol,
       baseUrl: normalizeBaseUrl(settings.baseUrl),
       model: settings.model,
@@ -84,12 +85,23 @@ export class ClassificationService implements ClassifierPort {
   }
 }
 
-function makeCacheKey(url: string, folders: FolderSummary[], settings: Settings): string {
+function makeCacheKey(input: ClassificationInput, folders: FolderSummary[], settings: Settings): string {
   const folderFingerprint = stableFingerprint(
-    folders.map((folder) => `${folder.id}:${folder.path}:${folder.folderType ?? ''}`).sort(),
+    folders.map((folder) => JSON.stringify({
+      id: folder.id,
+      name: folder.name,
+      path: folder.path,
+      folderType: folder.folderType ?? '',
+      unmodifiable: folder.unmodifiable ?? '',
+      samples: (folder.samples ?? []).slice(0, 3).map((sample) => ({
+        title: sample.title,
+        url: sample.url,
+        hostname: sample.hostname,
+      })),
+    })).sort(),
   );
   const provider = `${settings.protocol}:${normalizeBaseUrl(settings.baseUrl)}:${settings.model}`;
-  return `${normalizedUrl(url)}|${folderFingerprint}|${provider}`;
+  return `${normalizedUrl(input.url)}|${input.title}|${input.domain}|${input.currentFolderId ?? ''}|${input.currentFolder}|${folderFingerprint}|${provider}`;
 }
 
 function resultReferencesFolders(result: ClassificationResult, folders: FolderSummary[]): boolean {

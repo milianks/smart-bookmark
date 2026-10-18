@@ -84,6 +84,12 @@ export interface BookmarkSnapshot {
   dateAdded?: number;
 }
 
+export interface BookmarkSample {
+  title: string;
+  url: string;
+  hostname: string;
+}
+
 export interface FolderSummary {
   id: string;
   name: string;
@@ -91,6 +97,7 @@ export interface FolderSummary {
   parentId?: string;
   folderType?: string;
   unmodifiable?: string;
+  samples?: BookmarkSample[];
 }
 
 export type JobStatus =

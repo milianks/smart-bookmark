@@ -1,4 +1,5 @@
 import type { FolderSummary } from '../types/domain';
+import { truncate } from '../lib/utils/ids';
 
 export interface BookmarkNode {
   id: string;
@@ -42,6 +43,11 @@ export const SMART_BOOKMARK_DEFAULT_FOLDERS = [
   '🌿 生活',
   '🗄️ 归档',
 ] as const;
+
+const MAX_FOLDER_SAMPLES = 3;
+const MAX_SAMPLE_TITLE_LENGTH = 160;
+const MAX_SAMPLE_URL_LENGTH = 512;
+const MAX_SAMPLE_HOSTNAME_LENGTH = 253;
 
 export interface BookmarkPort {
   getTree(): Promise<BookmarkNode[]>;
@@ -115,6 +121,28 @@ function isFolder(node: BookmarkNode): boolean {
   return !node.url;
 }
 
+function bookmarkSample(node: BookmarkNode) {
+  if (!node.url) return null;
+  try {
+    const url = new URL(node.url);
+    if (!['http:', 'https:'].includes(url.protocol)) return null;
+    return {
+      title: truncate(node.title || '(无标题)', MAX_SAMPLE_TITLE_LENGTH),
+      url: truncate(node.url, MAX_SAMPLE_URL_LENGTH),
+      hostname: truncate(url.hostname, MAX_SAMPLE_HOSTNAME_LENGTH),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function folderSamples(node: BookmarkNode) {
+  return (node.children ?? [])
+    .map(bookmarkSample)
+    .filter((sample): sample is NonNullable<ReturnType<typeof bookmarkSample>> => Boolean(sample))
+    .slice(0, MAX_FOLDER_SAMPLES);
+}
+
 /** Check whether a node is the smart root or an editable descendant of it. */
 export function isNodeWithinRoot(tree: BookmarkNode[], nodeId: string, rootId: string): boolean {
   const root = findNodeInTree(tree, rootId);
@@ -139,6 +167,7 @@ export function getFoldersWithinRoot(tree: BookmarkNode[], rootId: string): Fold
     if (managed || !isFolder(node)) return;
     const currentPath = node.title.trim() ? [...ancestors, node.title] : ancestors;
     if (node.children !== undefined && node.title.trim()) {
+      const samples = folderSamples(node);
       folders.push({
         id: node.id,
         name: node.title,
@@ -146,6 +175,7 @@ export function getFoldersWithinRoot(tree: BookmarkNode[], rootId: string): Fold
         ...(node.parentId ? { parentId: node.parentId } : {}),
         ...(node.folderType ? { folderType: node.folderType } : {}),
         ...(node.unmodifiable ? { unmodifiable: node.unmodifiable } : {}),
+        ...(samples.length > 0 ? { samples } : {}),
       });
     }
     for (const child of node.children ?? []) visit(child, currentPath, managed);

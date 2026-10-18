@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICompatibleProvider } from '../lib/ai/openai-compatible';
 import type { ProviderConfig } from '../lib/ai/provider-config';
-import type { ClassificationInput } from '../lib/ai/prompts';
+import { buildClassificationMessages, type ClassificationInput } from '../lib/ai/prompts';
 
 const input: ClassificationInput = {
   title: 'Untrusted page title',
@@ -25,6 +25,20 @@ const baseConfig: Omit<ProviderConfig, 'protocol'> = {
 
 describe('OpenAICompatibleProvider', () => {
   afterEach(() => vi.useRealTimers());
+
+  it('分类提示包含有界目录样例和保守分类规则', () => {
+    const messages = buildClassificationMessages(input, [{
+      id: 'folder', name: '开发', path: '智能书签 / 开发', samples: [
+        { title: 'React', url: 'https://react.dev', hostname: 'react.dev' },
+        { title: 'TypeScript', url: 'https://typescriptlang.org', hostname: 'typescriptlang.org' },
+      ],
+    }]);
+
+    expect(messages[0]?.content).toContain('选择 keep');
+    expect(messages[0]?.content).toContain('不要创建文件夹');
+    expect(messages[1]?.content).toContain('react.dev');
+    expect(messages[1]?.content).toContain('samples');
+  });
 
   it.each([
     {

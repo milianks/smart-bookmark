@@ -1,0 +1,5 @@
+{"file":".trellis/spec/backend/index.md","reason":"Backend quality scope for final review."}
+{"file":".trellis/spec/backend/quality-guidelines.md","reason":"Security, validation, mutation, and test checks."}
+{"file":".trellis/spec/backend/extension-runtime-contract.md","reason":"Cross-layer runtime and isolation contract."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Review all changed data boundaries."}
+{"file":".trellis/tasks/10-18-improve-classification/research/github-classification-patterns.md","reason":"Verify implementation follows the researched bounded and conservative approach."}
