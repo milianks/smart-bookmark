@@ -1,23 +1,24 @@
- # Dependencies
- node_modules/
- 
- # WXT build output
- .output/
- .wxt/
- 
- # Local environment and secrets
- .env*
- !.env.example
- 
- # Local agent/runtime state
- .omc/
- .omx/
- .claude/
- 
- # Test output
- coverage/
- 
- # OS/editor artifacts
- .DS_Store
- Thumbs.db
- *.log
+# Dependencies
+node_modules/
+
+# WXT build output
+.output/
+.wxt/
+
+# Local environment and secrets
+.env*
+!.env.example
+
+# Local agent/runtime state
+.omc/
+.omx/
+.claude
+
+
+# Test output
+coverage/
+
+# OS/editor artifacts
+.DS_Store
+Thumbs.db
+*.log
