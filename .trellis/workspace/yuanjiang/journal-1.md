@@ -261,3 +261,39 @@ Added account-named Chrome smart bookmark root with default folders and strict r
 ### Status
 
 [OK] **Completed**
+
+
+## Session 12: 完成智能书签分类增强
+<!-- trellis-session: v=2 fp=a2cd705101801f49 -->
+
+**Date**: 2026-10-18
+**Task**: 完成智能书签分类增强
+**Branch**: `feat/smart-bookmark-root`
+
+### Summary
+
+借鉴 GitHub 书签整理方案，补充轻量目录样例、URL 路径与保守候选排序，保持智能根目录隔离。
+
+### Main Changes
+
+- 目录摘要携带最多三条 HTTP(S) 书签样例，AI 仅接收有界元数据。
+- 本地分类加入 URL 路径、目录路径和样例证据，弱证据保留完整目录，强证据最多发送六个候选。
+- 分类缓存包含标题、当前目录、目录路径和样例，目录或标题变化会失效。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `efd96fd` | feat(classifier): improve smart bookmark classification |
+
+### Testing
+
+- [OK] pnpm typecheck、pnpm test --run（108 项）、pnpm build、git diff --check 均通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Chrome 实机冒烟验证首次安装、未登录命名和真实分类效果。
