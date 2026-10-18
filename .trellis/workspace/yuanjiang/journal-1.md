@@ -239,3 +239,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 11: Smart bookmark root implementation
+<!-- trellis-session: v=2 fp=1d26bbb5d147e3cb -->
+
+**Date**: 2026-10-18
+**Task**: Smart bookmark root implementation
+**Branch**: `feat/smart-bookmark-root`
+
+### Summary
+
+Added account-named Chrome smart bookmark root with default folders and strict root-scoped classification, review, scan, undo, and metadata handling. Verified typecheck, 98 tests, production build, and manifest identity.email; Chrome manual smoke test remains.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `3114b74` | feat(bookmarks): isolate smart bookmark root |
+
+### Status
+
+[OK] **Completed**
