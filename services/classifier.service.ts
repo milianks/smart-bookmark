@@ -2,12 +2,13 @@ import type {
   CacheEntry,
   ClassifiedResult,
   ClassificationResult,
+  CorrectionEntry,
   FolderSummary,
   Settings,
 } from '../types/domain';
 import type { StateRepository } from '../lib/storage/repository';
-import { normalizedUrl, stableFingerprint } from '../lib/utils/ids';
-import type { ClassificationInput } from '../lib/ai/prompts';
+import { hostnameKey, normalizedUrl, stableFingerprint } from '../lib/utils/ids';
+import type { ClassificationInput, RecentCorrection } from '../lib/ai/prompts';
 import type { ClassifierProvider } from '../lib/ai/openai-compatible';
 import { ProviderError } from '../lib/ai/openai-compatible';
 import { classifyWithRules, rankFolderCandidates } from '../lib/ai/rule-classifier';
@@ -53,6 +54,9 @@ export class ClassificationService implements ClassifierPort {
       await this.store.update((state) => { delete state.cache[cacheKey]; });
     }
 
+    const corrected = applyCorrection(snapshot.corrections[hostnameKey(input.domain)], input, folders);
+    if (corrected) return { result: corrected, source: 'rule' };
+
     const localResult = classifyWithRules(input, folders);
     if (localResult && localResult.confidence >= settings.confidenceThreshold) {
       await cacheResult(this.store, cacheKey, localResult, 'cache');
@@ -61,12 +65,13 @@ export class ClassificationService implements ClassifierPort {
     if (!hasProviderPermission) throw new PermissionRequiredError();
 
     const providerFolders = rankFolderCandidates(input, folders);
+    const recentCorrections = recentUserDecisions(snapshot.corrections, folders);
     const result = await this.provider.classify(input, providerFolders, {
       protocol: settings.protocol,
       baseUrl: normalizeBaseUrl(settings.baseUrl),
       model: settings.model,
       apiKey: settings.apiKey,
-    });
+    }, recentCorrections);
     if (!resultReferencesFolders(result, folders)) {
       throw new ProviderError('AI 推荐了当前书签树中不存在的文件夹，书签已保留原位。', false);
     }
@@ -112,6 +117,41 @@ function resultReferencesFolders(result: ClassificationResult, folders: FolderSu
     return folders.some((folder) => folder.id === result.suggestedFolder.parentId && folder.unmodifiable !== 'managed');
   }
   return true;
+}
+
+function applyCorrection(
+  correction: CorrectionEntry | undefined,
+  input: ClassificationInput,
+  folders: FolderSummary[],
+): ClassificationResult | null {
+  if (!correction) return null;
+  if (correction.action === 'keep') {
+    return { action: 'keep', confidence: 0.9, reason: '此前你选择保留同站点书签原位。' };
+  }
+  const target = folders.find((folder) => folder.id === correction.folderId && folder.unmodifiable !== 'managed');
+  if (!target || target.id === input.currentFolderId) return null;
+  return {
+    action: 'move',
+    targetFolderId: target.id,
+    confidence: 0.93,
+    reason: `按此前你确认的归类，同站点书签放入 ${target.path}。`,
+  };
+}
+
+function recentUserDecisions(
+  corrections: Record<string, CorrectionEntry>,
+  folders: FolderSummary[],
+): RecentCorrection[] {
+  return Object.values(corrections)
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 5)
+    .map((entry) => ({
+      domain: entry.domain,
+      action: entry.action,
+      ...(entry.folderId
+        ? { folderPath: folders.find((folder) => folder.id === entry.folderId)?.path }
+        : {}),
+    }));
 }
 
 async function cacheResult(

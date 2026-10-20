@@ -1,5 +1,5 @@
 import { ClassificationResultSchema, SummaryTagResultSchema, type ClassificationResult, type FolderSummary, type SummaryTagResult } from '../../types/domain';
-import { buildClassificationMessages, buildMetadataMessages, type BookmarkMetadataInput, type ClassificationInput } from './prompts';
+import { buildClassificationMessages, buildMetadataMessages, type BookmarkMetadataInput, type ClassificationInput, type RecentCorrection } from './prompts';
 import { normalizeBaseUrl, providerUrl, type ProviderConfig } from './provider-config';
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -14,7 +14,7 @@ export class ProviderError extends Error {
 }
 
 export interface ClassifierProvider {
-  classify(input: ClassificationInput, folders: FolderSummary[], config: ProviderConfig): Promise<ClassificationResult>;
+  classify(input: ClassificationInput, folders: FolderSummary[], config: ProviderConfig, recentCorrections?: RecentCorrection[]): Promise<ClassificationResult>;
   generateMetadata?(input: BookmarkMetadataInput, config: ProviderConfig): Promise<SummaryTagResult>;
   test(config: ProviderConfig): Promise<void>;
 }
@@ -30,8 +30,9 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     input: ClassificationInput,
     folders: FolderSummary[],
     config: ProviderConfig,
+    recentCorrections?: RecentCorrection[],
   ): Promise<ClassificationResult> {
-    const messages = buildClassificationMessages(input, folders);
+    const messages = buildClassificationMessages(input, folders, recentCorrections);
     const payload = await this.request(config, buildRequestBody(config, messages));
     const content = extractClassificationText(payload, config.protocol);
     const parsed = parseJsonContent(content);

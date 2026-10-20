@@ -28,6 +28,65 @@ describe('ClassificationService', () => {
     expect(provider.classify).not.toHaveBeenCalled();
   });
 
+  it('域名命中用户改选纠错时直接路由，不调用远端模型', async () => {
+    const provider = createProvider();
+    const store = new MemoryStateRepository();
+    await store.update((state) => {
+      state.corrections['github.com'] = { domain: 'github.com', action: 'move', folderId: 'development', createdAt: 1 };
+    });
+    const service = new ClassificationService(provider, store);
+
+    const result = await service.classify({
+      title: 'Some repository', url: 'https://github.com/a/b', domain: 'github.com',
+      currentFolder: 'Bookmarks bar', currentFolderId: 'bar',
+    }, folders, { ...DEFAULT_SETTINGS, apiKey: 'test-key' }, false);
+
+    expect(result).toMatchObject({ source: 'rule', result: { action: 'move', targetFolderId: 'development', confidence: 0.93 } });
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+
+  it('域名命中保留纠错时返回 keep 且不请求模型', async () => {
+    const provider = createProvider();
+    const store = new MemoryStateRepository();
+    await store.update((state) => {
+      state.corrections['github.com'] = { domain: 'github.com', action: 'keep', createdAt: 1 };
+    });
+    const service = new ClassificationService(provider, store);
+
+    const result = await service.classify({
+      title: 'GitHub programming developer repository', url: 'https://github.com/example/repo', domain: 'github.com',
+      currentFolder: 'Bookmarks bar', currentFolderId: 'bar',
+    }, folders, { ...DEFAULT_SETTINGS, apiKey: 'test-key' }, true);
+
+    expect(result).toMatchObject({ source: 'rule', result: { action: 'keep' } });
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+
+  it('最近纠错样本作为用户历史决定注入模型提示', async () => {
+    const provider = createProvider();
+    const store = new MemoryStateRepository();
+    await store.update((state) => {
+      state.corrections['github.com'] = { domain: 'github.com', action: 'move', folderId: 'development', createdAt: 2 };
+      state.corrections['medium.com'] = { domain: 'medium.com', action: 'keep', createdAt: 1 };
+    });
+    const service = new ClassificationService(provider, store);
+
+    await service.classify({
+      title: 'Unknown page', url: 'https://example.com/decisions', domain: 'example.com',
+      currentFolder: 'Bookmarks bar', currentFolderId: 'bar',
+    }, folders, { ...DEFAULT_SETTINGS, apiKey: 'test-key' }, true);
+
+    expect(provider.classify).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      [
+        expect.objectContaining({ domain: 'github.com', action: 'move', folderPath: expect.stringContaining('Development') }),
+        expect.objectContaining({ domain: 'medium.com', action: 'keep' }),
+      ],
+    );
+  });
+
   it('不确定分类且缺少主机权限时不调用远端 API', async () => {
     const provider = createProvider();
     const service = new ClassificationService(provider, new MemoryStateRepository());

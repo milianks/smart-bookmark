@@ -8,6 +8,12 @@ export interface ClassificationInput {
   currentFolder: string;
   currentFolderId?: string;
 }
+
+export interface RecentCorrection {
+  domain: string;
+  action: 'move' | 'keep';
+  folderPath?: string;
+}
 export interface BookmarkMetadataInput {
   title: string;
   url: string;
@@ -26,6 +32,7 @@ export function buildMetadataMessages(input: BookmarkMetadataInput): Array<{ rol
 export function buildClassificationMessages(
   input: ClassificationInput,
   folders: FolderSummary[],
+  recentCorrections: RecentCorrection[] = [],
 ): Array<{ role: 'system' | 'user'; content: string }> {
   return [
     {
@@ -38,6 +45,7 @@ export function buildClassificationMessages(
         '只能引用输入清单中真实存在的文件夹 ID。只有明确需要人工审核时才可建议新目录，并选择真实父目录。',
         '建议新目录时，名称语言与所选父目录下现有子目录名保持一致；无参照时跟随书签标题的主要语言。',
         '「工具」「待分类」「杂项」等泛目录只有在没有任何具体主题目录匹配时才可选。',
+        'recentUserDecisions 是用户此前的手动决定；同域名书签应优先遵循这些决定。',
         '不要声称读取网页正文。只输出 JSON，不要 Markdown 或额外文字。',
         '结构：move 时为 {"action":"move","targetFolderId":"...","confidence":0到1,"reason":"..."}；',
         '建议新目录时为 {"action":"suggest_folder","suggestedFolder":{"name":"...","parentId":"..."},"confidence":0到1,"reason":"..."}；',
@@ -46,11 +54,14 @@ export function buildClassificationMessages(
     },
     {
       role: 'user',
-      content: JSON.stringify({ bookmark: input, existingFolders: serializeFolderSummaries(folders) }),
+      content: JSON.stringify({
+        bookmark: input,
+        existingFolders: serializeFolderSummaries(folders),
+        ...(recentCorrections.length > 0 ? { recentUserDecisions: recentCorrections } : {}),
+      }),
     },
   ];
 }
-
 function serializeFolderSummaries(folders: FolderSummary[]): FolderSummary[] {
   return folders.map((folder) => ({
     id: folder.id,

@@ -4,9 +4,10 @@ import { ProviderError } from '../lib/ai/openai-compatible';
 import { PermissionRequiredError, type ClassifierPort } from './classifier.service';
 import { type BookmarkPort, type BookmarkNode, SMART_ARCHIVE_FOLDER_NAME } from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
-import { createId } from '../lib/utils/ids';
+import { createId, hostnameKey } from '../lib/utils/ids';
 import type {
   ActivityRecord,
+  CorrectionEntry,
   BookmarkJob,
   BookmarkSnapshot,
   ClassifiedResult,
@@ -274,7 +275,7 @@ export class OrganizerService {
       if (!(await this.revalidateReviewBeforeMove(item, target.folderId))) return;
       const operation = await this.prepareReviewMove(item, id, target.folderId);
       if (await this.moveWithRecovery(operation)) return;
-      await this.recordApprovedReview(item, operation, target.name);
+      await this.recordApprovedReview(item, operation, target.name, overrideFolderId);
     });
   }
 
@@ -396,13 +397,14 @@ export class OrganizerService {
     return operation;
   }
 
-  private async recordApprovedReview(item: ReviewItem, operation: PendingOperation, targetName: string): Promise<void> {
+  private async recordApprovedReview(item: ReviewItem, operation: PendingOperation, targetName: string, overrideFolderId?: string): Promise<void> {
     await this.deps.store.update((current) => {
       const review = current.reviews[item.id];
       if (review) review.status = 'approved';
       const job = current.jobs[item.bookmarkId];
       if (job) job.status = 'completed';
       current.pendingOperation = undefined;
+      if (overrideFolderId) recordCorrection(current, item.url, { action: 'move', folderId: overrideFolderId }, this.now());
       if (item.scanId) {
         const previous = current.lastHistoricalUndo?.scanId === item.scanId
           ? current.lastHistoricalUndo
@@ -433,6 +435,7 @@ export class OrganizerService {
       if (!item || item.status === 'rejected') return;
       if (item.status === 'approved' || item.status === 'stale') throw new Error('这条建议已经关闭。');
       await this.closeReview(item, 'rejected', '用户选择保留书签原位。', 'review_rejected');
+      await this.deps.store.update((current) => recordCorrection(current, item.url, { action: 'keep' }, this.now()));
       if (item.scanId) await this.refreshHistoricalScan(item.scanId);
     });
   }
@@ -1068,6 +1071,21 @@ function pushUndoRecord(state: PersistedState, record: UndoRecord): void {
   state.undoStack = [...state.undoStack.filter((entry) => entry.operationId !== record.operationId), record]
     .slice(-MAX_UNDO_STACK);
   state.lastUndo = record;
+}
+
+const MAX_CORRECTIONS = 50;
+
+function recordCorrection(
+  state: PersistedState,
+  url: string,
+  entry: { action: CorrectionEntry['action']; folderId?: string },
+  now: number,
+): void {
+  const domain = hostnameKey(url);
+  state.corrections[domain] = { domain, ...entry, createdAt: now };
+  const keys = Object.keys(state.corrections)
+    .sort((a, b) => state.corrections[a]!.createdAt - state.corrections[b]!.createdAt);
+  for (const key of keys.slice(0, Math.max(0, keys.length - MAX_CORRECTIONS))) delete state.corrections[key];
 }
 
 function removeUndoRecord(state: PersistedState, bookmarkId: string, originalToFolderId: string): void {

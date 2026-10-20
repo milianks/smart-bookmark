@@ -17,6 +17,17 @@ export function normalizedUrl(rawUrl: string): string {
   return url.toString();
 }
 
+/** Stable per-domain key for correction learning; accepts full URLs or bare hostnames. */
+export function hostnameKey(value: string): string {
+  let host = value;
+  try {
+    host = new URL(value).hostname;
+  } catch {
+    host = value;
+  }
+  return host.toLocaleLowerCase().replace(/^www\./, '').replace(/\.$/, '');
+}
+
 export function stableFingerprint(parts: string[]): string {
   let hash = 2166136261;
   for (const char of parts.join('\u001f')) {

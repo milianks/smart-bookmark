@@ -8,6 +8,7 @@ import {
   type PersistedState,
   type UndoRecord,
 } from '../../types/domain';
+import { hostnameKey } from '../utils/ids';
 
 const STORAGE_KEY = 'ai-bookmark-manager.state.v1';
 
@@ -71,6 +72,7 @@ function normalizeState(input: Partial<PersistedState>): PersistedState {
     historicalScan: normalizeHistoricalScan(input.historicalScan),
     lastHistoricalUndo: normalizeHistoricalUndo(input.lastHistoricalUndo),
     undoStack: normalizeUndoStack(input.undoStack, input.lastUndo),
+    corrections: normalizeCorrections(input.corrections),
     bookmarkMetadata: normalizeBookmarkMetadata(input.bookmarkMetadata),
     ...(SettingsDraftSchema.safeParse(input.settingsDraft).success
       ? { settingsDraft: SettingsDraftSchema.parse(input.settingsDraft) }
@@ -123,6 +125,26 @@ function normalizeUndoStack(stack: unknown, lastUndo: unknown): UndoRecord[] {
     : lastUndo && typeof lastUndo === 'object' ? [lastUndo as UndoRecord]
     : [];
   return source.slice(-10);
+}
+
+function normalizeCorrections(input: unknown): PersistedState['corrections'] {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const result: PersistedState['corrections'] = {};
+  for (const [rawDomain, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!rawDomain || typeof value !== 'object' || value === null) continue;
+    const entry = value as Record<string, unknown>;
+    if (entry.action !== 'move' && entry.action !== 'keep') continue;
+    if (typeof entry.createdAt !== 'number' || !Number.isFinite(entry.createdAt) || entry.createdAt < 0) continue;
+    if (entry.action === 'move' && typeof entry.folderId !== 'string') continue;
+    const domain = hostnameKey(rawDomain);
+    result[domain] = {
+      domain,
+      action: entry.action,
+      ...(entry.action === 'move' ? { folderId: entry.folderId as string } : {}),
+      createdAt: entry.createdAt,
+    };
+  }
+  return result;
 }
 
 function normalizeHistoricalUndo(input: unknown): HistoricalBatchUndoRecord | undefined {

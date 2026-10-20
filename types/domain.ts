@@ -144,6 +144,13 @@ export interface ReviewItem {
   metadata?: BookmarkMetadata;
 }
 
+export interface CorrectionEntry {
+  domain: string;
+  action: 'move' | 'keep';
+  folderId?: string;
+  createdAt: number;
+}
+
 export type HistoricalScanStatus = 'idle' | 'scanning' | 'awaiting_review' | 'completed' | 'failed';
 
 export interface HistoricalScanState {
@@ -231,6 +238,7 @@ export interface PersistedState {
   historicalScan?: HistoricalScanState;
   lastHistoricalUndo?: HistoricalBatchUndoRecord;
   bookmarkMetadata: Record<string, BookmarkMetadata>;
+  corrections: Record<string, CorrectionEntry>;
 }
 
 export interface HistoricalScanSummary extends Omit<HistoricalScanState, 'coveredIds' | 'forceOrganize'> {
@@ -268,5 +276,6 @@ export const emptyPersistedState = (): PersistedState => ({
   activities: [],
   undoStack: [],
   historicalScan: undefined,
+  corrections: {},
   bookmarkMetadata: {},
 });

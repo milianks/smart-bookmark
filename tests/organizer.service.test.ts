@@ -262,6 +262,18 @@ describe('OrganizerService', () => {
     expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('dev');
   });
 
+  it('拒绝记录 keep 纠错，改选批准记录 move 纠错', async () => {
+    result = { action: 'move', targetFolderId: 'dev', confidence: 0.6, reason: '需要确认' };
+    await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
+    await organizer.rejectReview('b1');
+    expect((await store.load()).corrections['example.com']).toMatchObject({ action: 'keep' });
+
+    bookmarks.addBookmark('b2', 'Second guide', 'https://example.org/x', 'smart-root');
+    await organizer.onBookmarkCreated('b2', bookmarks.nodes.get('b2')!);
+    await organizer.approveReview('b2', 'nested');
+    expect((await store.load()).corrections['example.org']).toMatchObject({ action: 'move', folderId: 'nested' });
+  });
+
   it('AI 失败时书签留在原位并记录失败', async () => {
     classifier.classify = vi.fn(async () => { throw new Error('provider unavailable'); });
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
