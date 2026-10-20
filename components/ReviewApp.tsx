@@ -34,6 +34,7 @@ export function ReviewApp() {
   const [metadataBusyId, setMetadataBusyId] = useState('');
   const [scanId, setScanId] = useState('');
   const [batchBusy, setBatchBusy] = useState(false);
+  const [overrideFolder, setOverrideFolder] = useState('');
 
   const refresh = useCallback(async () => {
     const response = await sendMessage({ type: 'state:get' });
@@ -52,6 +53,7 @@ export function ReviewApp() {
     return scanId ? all.filter((item) => item.scanId === scanId) : all;
   }, [state, scanId]);
   const active = items.find((item) => item.id === selected) ?? items[0];
+  useEffect(() => { setOverrideFolder(''); }, [active?.id]);
   const pendingCount = items.filter((item) => item.status === 'pending').length;
   const canApproveAll = items.some((item) => item.scanId && item.status === 'pending');
 
@@ -60,9 +62,14 @@ export function ReviewApp() {
     setError('');
     setNotice('');
     try {
-      const response = await sendMessage({ type: action === 'approve' ? 'review:approve' : 'review:reject', id: item.id });
+      const response = await sendMessage(
+        action === 'approve'
+          ? { type: 'review:approve', id: item.id, ...(overrideFolder ? { overrideFolderId: overrideFolder } : {}) }
+          : { type: 'review:reject', id: item.id },
+      );
       unwrapResponse(response);
       setNotice(action === 'approve' ? '已按建议整理书签。' : '已保留书签原位。');
+      if (action === 'approve') setOverrideFolder('');
       await refresh();
     } catch (reason) {
       setError(messageOf(reason));
@@ -158,16 +165,19 @@ export function ReviewApp() {
           </button>)}
         </div>
       </Card>
-      {active && <ReviewDetail item={active} metadata={active.metadata} busy={busyId === active.id} metadataBusy={metadataBusyId === active.bookmarkId} onGenerateMetadata={() => void generateMetadata(active.bookmarkId)} onApprove={() => void decide(active, 'approve')} onReject={() => void decide(active, 'reject')} />}
+      {active && <ReviewDetail item={active} metadata={active.metadata} busy={busyId === active.id} metadataBusy={metadataBusyId === active.bookmarkId} folders={state.folders} overrideFolder={overrideFolder} onOverrideChange={setOverrideFolder} onGenerateMetadata={() => void generateMetadata(active.bookmarkId)} onApprove={() => void decide(active, 'approve')} onReject={() => void decide(active, 'reject')} />}
     </div>}
   </main>;
 }
 
-function ReviewDetail({ item, metadata, busy, metadataBusy, onGenerateMetadata, onApprove, onReject }: {
+function ReviewDetail({ item, metadata, busy, metadataBusy, folders, overrideFolder, onOverrideChange, onGenerateMetadata, onApprove, onReject }: {
   item: ReviewItem;
   metadata?: ReviewItem['metadata'];
   busy: boolean;
   metadataBusy: boolean;
+  folders: Array<{ id: string; path: string }>;
+  overrideFolder: string;
+  onOverrideChange: (value: string) => void;
   onGenerateMetadata: () => void;
   onApprove: () => void;
   onReject: () => void;
@@ -223,8 +233,19 @@ function ReviewDetail({ item, metadata, busy, metadataBusy, onGenerateMetadata, 
         <p className="mt-1 break-words text-sm font-semibold">{recommendation}</p>
         <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{item.classification.reason}</p>
       </div>
+      {item.status === 'pending' && folders.length > 0 && <label className="block text-xs text-slate-500 dark:text-slate-400">
+        改选目标文件夹
+        <select
+          value={overrideFolder}
+          onChange={(event) => onOverrideChange(event.target.value)}
+          className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+        >
+          <option value="">按上方推荐处理</option>
+          {folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.path}</option>)}
+        </select>
+      </label>}
       <div className="flex flex-wrap items-center gap-2">
-        {item.status === 'pending' && item.classification.action !== 'keep' && <Button disabled={busy} onClick={onApprove}>{busy ? '正在处理…' : item.classification.action === 'suggest_folder' ? '创建文件夹并归档' : '移动到推荐文件夹'}</Button>}
+        {item.status === 'pending' && (item.classification.action !== 'keep' || overrideFolder) && <Button disabled={busy} onClick={onApprove}>{busy ? '正在处理…' : overrideFolder ? '移动到所选文件夹' : item.classification.action === 'suggest_folder' ? '创建文件夹并归档' : '移动到推荐文件夹'}</Button>}
         {item.status === 'pending' && <Button variant="secondary" disabled={busy} onClick={onReject}>保留原位</Button>}
         <Button variant="ghost" disabled={metadataBusy || busy} onClick={onGenerateMetadata}>{metadataBusy ? '生成中…' : metadata ? '重新生成摘要与标签' : '生成摘要与标签'}</Button>
       </div>

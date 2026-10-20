@@ -30,6 +30,7 @@ const dashboard: DashboardState = {
   awaitingConfigurationCount: 0,
   awaitingPermissionCount: 0,
   undoStackCount: 0,
+  folders: [],
   aiStatus: 'configured',
   historicalUndoAvailable: false,
 };

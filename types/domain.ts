@@ -247,6 +247,7 @@ export interface DashboardState {
   awaitingPermissionCount: number;
   lastUndo?: UndoRecord;
   undoStackCount: number;
+  folders: Array<{ id: string; path: string }>;
   aiStatus: 'configured' | 'missing-key' | 'permission-needed';
   historicalScan?: HistoricalScanSummary;
   historicalUndoAvailable: boolean;

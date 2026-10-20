@@ -238,6 +238,30 @@ describe('OrganizerService', () => {
     expect(review?.classification.reason).toContain('重复书签');
   });
 
+  it('批准时可改选目标文件夹并按改选执行', async () => {
+    result = { action: 'move', targetFolderId: 'dev', confidence: 0.6, reason: '需要确认' };
+    await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
+    await organizer.approveReview('b1', 'nested');
+    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('nested');
+    expect(bookmarks.moves.at(-1)).toEqual({ id: 'b1', target: 'nested' });
+  });
+
+  it('keep 建议改选后批准会移动书签', async () => {
+    await store.update((state) => {
+      state.jobs.b1 = {
+        bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
+        status: 'pending_review', attempts: 0, createdAt: 1, updatedAt: 1,
+      };
+      state.reviews.b1 = {
+        id: 'b1', bookmarkId: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph',
+        sourceParentId: 'smart-root', classification: { action: 'keep', confidence: 0.4, reason: '无明显主题' },
+        source: 'ai', createdAt: 1, status: 'pending',
+      };
+    });
+    await organizer.approveReview('b1', 'dev');
+    expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('dev');
+  });
+
   it('AI 失败时书签留在原位并记录失败', async () => {
     classifier.classify = vi.fn(async () => { throw new Error('provider unavailable'); });
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);

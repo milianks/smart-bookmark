@@ -23,7 +23,7 @@ export const RequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('settings-draft:get') }).strict(),
   z.object({ type: z.literal('settings-draft:set'), draft: SettingsDraftSchema }).strict(),
   z.object({ type: z.literal('settings-draft:clear') }).strict(),
-  z.object({ type: z.literal('review:approve'), id: z.string().min(1) }).strict(),
+  z.object({ type: z.literal('review:approve'), id: z.string().min(1), overrideFolderId: z.string().trim().min(1).max(200).optional() }).strict(),
   z.object({ type: z.literal('review:reject'), id: z.string().min(1) }).strict(),
   z.object({ type: z.literal('undo:last') }).strict(),
   z.object({ type: z.literal('scan:start') }).strict(),
@@ -34,7 +34,7 @@ export const RequestSchema = z.discriminatedUnion('type', [
 
 export interface OrganizerFacade {
   getDashboardState(): Promise<DashboardState>;
-  approveReview(id: string): Promise<void>;
+  approveReview(id: string, overrideFolderId?: string): Promise<void>;
   rejectReview(id: string): Promise<void>;
   undoLastMove(): Promise<string>;
   undoHistoricalLast(): Promise<number>;
@@ -86,7 +86,7 @@ export async function handleRequest(request: RuntimeRequest, services: RouterSer
       await settings.clearSettingsDraft();
       return { saved: true };
     case 'review:approve':
-      await organizer.approveReview(request.id);
+      await organizer.approveReview(request.id, request.overrideFolderId);
       return { approved: true };
     case 'review:reject':
       await organizer.rejectReview(request.id);

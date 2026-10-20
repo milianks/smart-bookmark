@@ -229,6 +229,11 @@ export class OrganizerService {
       }
     }
     const { apiKey: _apiKey, ...settings } = state.settings;
+    const folderOptions = state.smartBookmarkRootId
+      ? ((await this.getFoldersWithinSmartRoot(state.smartBookmarkRootId)) ?? [])
+        .filter((folder) => folder.unmodifiable !== 'managed')
+        .map((folder) => ({ id: folder.id, path: folder.path }))
+      : [];
     return {
       settings: { ...settings, hasApiKey: configured },
       pendingReviews: Object.values(state.reviews)
@@ -248,6 +253,7 @@ export class OrganizerService {
       awaitingPermissionCount: Object.values(state.jobs).filter((job) => job.status === 'awaiting_permission').length,
       ...(state.lastUndo ? { lastUndo: state.lastUndo } : {}),
       undoStackCount: state.undoStack.length,
+      folders: folderOptions,
       aiStatus: configured ? (permission ? 'configured' : 'permission-needed') : 'missing-key',
       ...(state.historicalScan ? {
         historicalScan: historicalScanSummary(state.historicalScan, Boolean(state.lastHistoricalUndo?.moved.length)),
@@ -258,12 +264,12 @@ export class OrganizerService {
 
 
 
-  async approveReview(id: string): Promise<void> {
+  async approveReview(id: string, overrideFolderId?: string): Promise<void> {
     await this.withMutationLock(async () => {
       await this.reconcilePendingOperation();
       const item = await this.loadReviewForApproval(id);
       if (!item) return;
-      const target = await this.resolveReviewTarget(item);
+      const target = await this.resolveReviewTarget(item, overrideFolderId);
       if (!target) return;
       if (!(await this.revalidateReviewBeforeMove(item, target.folderId))) return;
       const operation = await this.prepareReviewMove(item, id, target.folderId);
@@ -294,11 +300,20 @@ export class OrganizerService {
     return approvingItem;
   }
 
-  private async resolveReviewTarget(item: ReviewItem): Promise<{ folderId: string; name: string } | null> {
+  private async resolveReviewTarget(item: ReviewItem, overrideFolderId?: string): Promise<{ folderId: string; name: string } | null> {
     const rootId = await this.getSmartRootId();
     if (!rootId) {
       await this.markReviewStale(item, '智能书签目录不可用，未执行建议。');
       throw new Error('智能书签目录不可用，未执行建议。');
+    }
+    if (overrideFolderId) {
+      const overrideTarget = await this.deps.bookmarks.getFolder(overrideFolderId);
+      if (!overrideTarget || overrideTarget.unmodifiable === 'managed'
+        || !(await this.isValidSmartTarget(overrideFolderId, rootId))) {
+        await this.markReviewStale(item, '改选的文件夹不存在或不可用，未执行移动。');
+        throw new Error('改选的文件夹不存在或不可用。');
+      }
+      return { folderId: overrideTarget.id, name: overrideTarget.title };
     }
     if (item.classification.action === 'suggest_folder') {
       const { name, parentId } = item.classification.suggestedFolder;

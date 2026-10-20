@@ -7,7 +7,7 @@ export type RuntimeRequest =
   | { type: 'settings-draft:get' }
   | { type: 'settings-draft:set'; draft: SettingsDraft }
   | { type: 'settings-draft:clear' }
-  | { type: 'review:approve'; id: string }
+  | { type: 'review:approve'; id: string; overrideFolderId?: string }
   | { type: 'review:reject'; id: string }
   | { type: 'undo:last' }
   | { type: 'scan:start' }
