@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Review accessibility, layout stability, and the required typecheck/test/build verification."}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "Verify popup/settings parity, fixed-width behavior, and safe text rendering."}

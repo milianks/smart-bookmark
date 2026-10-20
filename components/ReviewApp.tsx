@@ -1,9 +1,29 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { DashboardState, ReviewItem } from '../types/domain';
 import { sendMessage, unwrapResponse } from '../types/messages';
+import { cn } from '../lib/utils/cn';
 import { Badge } from './ui/badge';
+import type { BadgeTone } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader } from './ui/card';
+import { Notice } from './ui/notice';
+import { Skeleton } from './ui/skeleton';
+
+const statusTone: Record<ReviewItem['status'], BadgeTone> = {
+  pending: 'warning',
+  approving: 'primary',
+  approved: 'success',
+  rejected: 'neutral',
+  stale: 'neutral',
+};
+
+const statusDot: Record<ReviewItem['status'], string> = {
+  pending: 'bg-amber-500',
+  approving: 'bg-violet-500',
+  approved: 'bg-emerald-500',
+  rejected: 'bg-slate-400',
+  stale: 'bg-slate-400',
+};
 
 export function ReviewApp() {
   const [state, setState] = useState<DashboardState | null>(null);
@@ -32,6 +52,8 @@ export function ReviewApp() {
     return scanId ? all.filter((item) => item.scanId === scanId) : all;
   }, [state, scanId]);
   const active = items.find((item) => item.id === selected) ?? items[0];
+  const pendingCount = items.filter((item) => item.status === 'pending').length;
+  const canApproveAll = items.some((item) => item.scanId && item.status === 'pending');
 
   async function decide(item: ReviewItem, action: 'approve' | 'reject') {
     setBusyId(item.id);
@@ -80,24 +102,59 @@ export function ReviewApp() {
     finally { setMetadataBusyId(''); }
   }
 
-  return <main className="mx-auto max-w-5xl space-y-6 px-5 py-8 sm:px-8">
+  return <main className="mx-auto w-full max-w-5xl space-y-4 px-5 py-7 sm:px-8 lg:px-10" aria-busy={!state}>
     <header>
-      <a href={chrome.runtime.getURL('/popup.html')} className="text-xs font-medium text-violet-700 dark:text-violet-300">← 返回书签管理</a>
-      <div className="mt-3 flex flex-wrap items-end justify-between gap-3">
-        <div><h1 className="text-2xl font-semibold tracking-tight">待确认的整理</h1><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">确认后才会创建新目录或移动低置信度书签。</p></div>
-        <div className="flex items-center gap-2"><Badge>{items.filter((item) => item.status === 'pending').length} 条待处理</Badge>{items.some((item) => item.scanId && item.status === 'pending') && <Button size="sm" disabled={batchBusy} onClick={() => void approveAll()}>{batchBusy ? '处理中…' : '批准当前全部'}</Button>}{state?.historicalUndoAvailable && <Button size="sm" variant="secondary" disabled={batchBusy} onClick={() => void undoHistorical()}>撤销批量整理</Button>}</div>
+      <a href={chrome.runtime.getURL('/popup.html')} className="inline-flex rounded text-xs font-medium text-violet-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 dark:text-violet-300 dark:focus-visible:ring-offset-slate-950">← 返回书签管理</a>
+      <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-xl font-semibold tracking-tight">待确认的整理</h1>
+          <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">确认后才会创建新目录或移动低置信度书签。</p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={pendingCount > 0 ? 'primary' : 'neutral'}>{pendingCount} 条待处理</Badge>
+          {canApproveAll && <Button size="sm" disabled={batchBusy} onClick={() => void approveAll()}>{batchBusy ? '处理中…' : '批准当前全部'}</Button>}
+          {state?.historicalUndoAvailable && <Button size="sm" variant="secondary" disabled={batchBusy} onClick={() => void undoHistorical()}>撤销批量整理</Button>}
+        </div>
       </div>
     </header>
-    {notice && <p role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200">{notice}</p>}
-    {error && <p role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800 dark:border-rose-900 dark:bg-rose-950/50 dark:text-rose-200">{error}</p>}
 
-    {!state ? <p className="text-sm text-slate-500">正在读取建议…</p> : items.length === 0 ? <Card><CardContent className="p-8 text-center"><p className="font-medium">当前没有待确认的分类建议</p><p className="mt-2 text-sm text-slate-500">新目录建议和需要确认的分类会显示在这里。</p></CardContent></Card> : <div className="grid gap-5 lg:grid-cols-[260px_1fr]">
-      <Card className="h-fit">
-        <CardHeader><h2 className="text-sm font-semibold">建议列表</h2></CardHeader>
-        <div className="p-2">
-          {items.map((item) => <button key={item.id} onClick={() => setSelected(item.id)} className={`mb-1 w-full rounded-xl p-3 text-left transition ${active?.id === item.id ? 'bg-violet-50 dark:bg-violet-950/50' : 'hover:bg-slate-50 dark:hover:bg-slate-800'}`}>
+    {notice && <Notice tone="success" className="text-sm">{notice}</Notice>}
+    {error && <Notice tone="error" className="text-sm">{error}</Notice>}
+
+    {!state ? <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+      <Skeleton className="h-64" />
+      <Skeleton className="h-96" />
+      <p role="status" className="sr-only">正在读取建议…</p>
+    </div> : items.length === 0 ? <Card>
+      <CardContent className="p-8 text-center">
+        <p className="font-medium">当前没有待确认的分类建议</p>
+        <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">新目录建议和需要确认的分类会显示在这里。</p>
+      </CardContent>
+    </Card> : <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
+      <Card className="h-fit min-w-0 lg:sticky lg:top-6">
+        <CardHeader className="flex items-center justify-between gap-3">
+          <h2 className="text-base font-semibold">建议列表</h2>
+          <Badge>{items.length}</Badge>
+        </CardHeader>
+        <div className="flex gap-2 overflow-x-auto p-2 lg:block">
+          {items.map((item) => <button
+            key={item.id}
+            type="button"
+            aria-current={active?.id === item.id ? 'true' : undefined}
+            onClick={() => setSelected(item.id)}
+            className={cn(
+              'mb-1 w-56 shrink-0 rounded-xl border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white lg:w-full dark:focus-visible:ring-offset-slate-950',
+              active?.id === item.id
+                ? 'border-violet-200 bg-violet-50 dark:border-violet-800 dark:bg-violet-950/50'
+                : 'border-transparent hover:bg-slate-50 dark:hover:bg-slate-800',
+            )}
+          >
             <span className="block truncate text-sm font-medium">{item.title}</span>
-            <span className="mt-1 block truncate text-xs text-slate-500">{safeHostname(item.url)}</span>
+            <span className="mt-1 block truncate text-xs text-slate-500 dark:text-slate-400">{safeHostname(item.url)}</span>
+            <span className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+              <span aria-hidden="true" className={cn('size-1.5 rounded-full', statusDot[item.status])} />
+              {reviewStatusLabel(item.status)}
+            </span>
           </button>)}
         </div>
       </Card>
@@ -121,16 +178,55 @@ function ReviewDetail({ item, metadata, busy, metadataBusy, onGenerateMetadata, 
       ? `创建文件夹：${item.classification.suggestedFolder.name} · ${item.parentFolderPath ?? item.classification.suggestedFolder.parentId}`
       : '保留在当前位置';
   const sourceLabel = { cache: '本地缓存', rule: '本地规则', ai: 'AI 建议' }[item.source];
-  return <Card>
-    <CardHeader className="flex flex-wrap items-start justify-between gap-3"><div><Badge className="bg-violet-100 text-violet-700 dark:bg-violet-950 dark:text-violet-300">{sourceLabel}</Badge><h2 className="mt-3 text-lg font-semibold">{item.title}</h2></div><span className="text-sm text-slate-500">置信度 {(item.classification.confidence * 100).toFixed(0)}%</span></CardHeader>
-    <CardContent className="space-y-5">
-      <div><p className="text-xs font-medium uppercase tracking-wide text-slate-500">网页地址</p><a href={item.url} target="_blank" rel="noreferrer" className="mt-1 block break-all text-sm text-violet-700 underline decoration-violet-200 underline-offset-4 dark:text-violet-300">{item.url}</a></div>
-      {metadata && <div className="rounded-2xl bg-emerald-50 p-4 dark:bg-emerald-950/30"><p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">摘要与标签</p><p className="mt-1 text-sm leading-6">{metadata.summary}</p><div className="mt-2 flex flex-wrap gap-1">{metadata.tags.map((tag) => <span key={tag} className="rounded bg-white px-2 py-1 text-xs dark:bg-slate-900">#{tag}</span>)}</div></div>}
-      <div className="rounded-2xl bg-slate-50 p-4 dark:bg-slate-950"><p className="text-xs font-medium text-slate-500">推荐操作</p><p className="mt-1 text-sm font-semibold">{recommendation}</p><p className="mt-3 text-sm leading-6 text-slate-600 dark:text-slate-300">{item.classification.reason}</p></div>
-      <div className="flex flex-wrap gap-2"><Button variant="secondary" disabled={metadataBusy || busy} onClick={onGenerateMetadata}>{metadataBusy ? '生成中…' : metadata ? '重新生成摘要与标签' : '生成摘要与标签'}</Button>
-        {item.status !== 'pending' && <Badge className="bg-slate-100 text-slate-600">{reviewStatusLabel(item.status)}</Badge>}
+  const confidence = Math.round(item.classification.confidence * 100);
+
+  return <Card className="min-w-0">
+    <CardHeader className="flex flex-wrap items-start justify-between gap-4">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone="primary">{sourceLabel}</Badge>
+          {item.status !== 'pending' && <Badge tone={statusTone[item.status]}>{reviewStatusLabel(item.status)}</Badge>}
+          {item.scanId && <Badge>历史扫描</Badge>}
+        </div>
+        <h2 className="mt-2 break-words text-lg font-semibold">{item.title}</h2>
+        <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">{safeHostname(item.url)}</p>
+      </div>
+      <div className="min-w-[7rem] shrink-0">
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="text-xs text-slate-500 dark:text-slate-400">置信度</span>
+          <span className="text-sm font-semibold">{confidence}%</span>
+        </div>
+        <div
+          role="progressbar"
+          aria-label="分类置信度"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={confidence}
+          className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800"
+        >
+          <div className="h-full rounded-full bg-violet-600" style={{ width: `${confidence}%` }} />
+        </div>
+      </div>
+    </CardHeader>
+    <CardContent className="space-y-4">
+      <div>
+        <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">网页地址</p>
+        <a href={item.url} target="_blank" rel="noreferrer" className="mt-1 block break-all rounded text-sm text-violet-700 underline decoration-violet-200 underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-violet-300 dark:decoration-violet-800 dark:focus-visible:ring-offset-slate-950">{item.url}</a>
+      </div>
+      {metadata && <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950/30">
+        <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">摘要与标签</p>
+        <p className="mt-1 text-sm leading-6 text-slate-800 dark:text-slate-200">{metadata.summary}</p>
+        <div className="mt-2 flex flex-wrap gap-1">{metadata.tags.map((tag) => <span key={tag} className="rounded bg-white px-1.5 py-0.5 text-xs text-slate-600 dark:bg-slate-900 dark:text-slate-300">#{tag}</span>)}</div>
+      </div>}
+      <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
+        <p className="text-xs font-medium text-slate-500 dark:text-slate-400">推荐操作</p>
+        <p className="mt-1 break-words text-sm font-semibold">{recommendation}</p>
+        <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{item.classification.reason}</p>
+      </div>
+      <div className="flex flex-wrap items-center gap-2">
         {item.status === 'pending' && item.classification.action !== 'keep' && <Button disabled={busy} onClick={onApprove}>{busy ? '正在处理…' : item.classification.action === 'suggest_folder' ? '创建文件夹并归档' : '移动到推荐文件夹'}</Button>}
         {item.status === 'pending' && <Button variant="secondary" disabled={busy} onClick={onReject}>保留原位</Button>}
+        <Button variant="ghost" disabled={metadataBusy || busy} onClick={onGenerateMetadata}>{metadataBusy ? '生成中…' : metadata ? '重新生成摘要与标签' : '生成摘要与标签'}</Button>
       </div>
     </CardContent>
   </Card>;

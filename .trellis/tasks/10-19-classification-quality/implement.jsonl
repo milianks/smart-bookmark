@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "MV3 后台/书签 API/存储契约，R4-R10 全部触碰该层"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "服务层质量与测试要求"}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "Review/Popup UI 改动（R5/R9）"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "types/ 契约扩展（R4/R5/R7/R10）"}
+{"file": ".trellis/tasks/10-19-classification-quality/design.md", "reason": "本任务技术设计：10 项需求方案与边界"}

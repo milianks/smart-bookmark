@@ -147,6 +147,53 @@ describe('ClassificationService', () => {
     expect(result).toBeNull();
   });
 
+  it('中文标题与目录名共享词汇时本地规则可命中', () => {
+    const result = classifyWithRules({
+      title: '机器学习入门',
+      url: 'https://example.com/ml/intro',
+      domain: 'example.com',
+      currentFolder: '智能书签 / 待分类',
+      currentFolderId: 'inbox',
+    }, [
+      { id: 'ml', name: '机器学习', path: '智能书签 / 机器学习' },
+      { id: 'inbox', name: '待分类', path: '智能书签 / 待分类' },
+    ]);
+
+    expect(result).toMatchObject({ action: 'move', targetFolderId: 'ml' });
+  });
+
+  it('中文共享词汇用于排序并限制 AI 候选时保留当前目录', () => {
+    const chineseFolders: FolderSummary[] = [
+      { id: 'current', name: '待分类', path: '智能书签 / 待分类' },
+      { id: 'ml', name: '机器学习', path: '智能书签 / 机器学习' },
+      ...Array.from({ length: 6 }, (_, index) => ({ id: `misc-${index}`, name: `杂项 ${index}`, path: `智能书签 / 杂项 ${index}` })),
+    ];
+    const input = {
+      title: '机器学习入门', url: 'https://example.com/ml/intro', domain: 'example.com',
+      currentFolder: '智能书签 / 待分类', currentFolderId: 'current',
+    };
+
+    expect(classifyWithRules(input, chineseFolders)).toMatchObject({ action: 'move', targetFolderId: 'ml' });
+    const candidates = rankFolderCandidates(input, chineseFolders);
+    expect(candidates.some((folder) => folder.id === 'ml')).toBe(true);
+    expect(candidates.some((folder) => folder.id === 'current')).toBe(true);
+  });
+
+  it('泛化中文词单独不能触发自动分类', () => {
+    const result = classifyWithRules({
+      title: '项目进度',
+      url: 'https://example.com/status',
+      domain: 'example.com',
+      currentFolder: '智能书签 / 待分类',
+      currentFolderId: 'inbox',
+    }, [
+      { id: 'project', name: '项目管理', path: '智能书签 / 项目管理' },
+      { id: 'inbox', name: '待分类', path: '智能书签 / 待分类' },
+    ]);
+
+    expect(result).toBeNull();
+  });
+
   it('同域样例单独不足以触发自动分类', () => {
     const result = classifyWithRules({
       title: 'Account settings', url: 'https://github.com/settings/profile', domain: 'github.com',

@@ -46,11 +46,12 @@ export function rankFolderCandidates(
   const current = input.currentFolderId
     ? folders.find((folder) => folder.id === input.currentFolderId)
     : undefined;
-  const selected = ranked
-    .slice(0, current && top.folder.id !== current.id ? MAX_CANDIDATE_FOLDERS - 1 : MAX_CANDIDATE_FOLDERS)
-    .map((candidate) => candidate.folder);
-  if (current && !selected.some((folder) => folder.id === current.id)) selected.push(current);
-  return selected.slice(0, MAX_CANDIDATE_FOLDERS);
+  const selected = ranked.slice(0, MAX_CANDIDATE_FOLDERS).map((candidate) => candidate.folder);
+  if (current && !selected.some((folder) => folder.id === current.id)) {
+    selected.pop();
+    selected.push(current);
+  }
+  return selected;
 }
 
 export function classifyWithRules(
@@ -183,8 +184,22 @@ function informativeOverlap(subject: Set<string>, target: Set<string>): number {
 }
 
 function tokens(value: string): string[] {
-  return (value.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])
-    .filter((token) => token.length > 1 && !STOP_WORDS.has(token));
+  const result: string[] = [];
+  const push = (token: string) => {
+    if (token.length > 1 && !STOP_WORDS.has(token)) result.push(token);
+  };
+  for (const run of value.toLocaleLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) {
+    // Han runs carry no separators; whole-run tokens only match on exact equality,
+    // so segment by script and emit overlapping bigrams for Chinese text.
+    for (const segment of run.match(/\p{sc=Han}+|\P{sc=Han}+/gu) ?? []) {
+      if (/\p{sc=Han}/u.test(segment)) {
+        for (let index = 0; index + 1 < segment.length; index += 1) push(segment.slice(index, index + 2));
+      } else {
+        push(segment);
+      }
+    }
+  }
+  return result;
 }
 
 function urlPathTokens(rawUrl: string): string[] {

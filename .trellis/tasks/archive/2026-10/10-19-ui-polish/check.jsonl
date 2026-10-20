@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "verify primitive reuse, a11y, dark-mode consistency"}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "verify popup width, runtime boundary, status roles"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "verify checks and forbidden patterns"}
