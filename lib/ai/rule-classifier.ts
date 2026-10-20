@@ -20,7 +20,8 @@ const DOMAIN_HINTS: Record<string, string[]> = {
   'medium.com': ['article', 'reading', 'writing', 'blog', '文章', '阅读'],
 };
 
-const MAX_CANDIDATE_FOLDERS = 6;
+const MAX_CANDIDATE_BUDGET_BYTES = 10_000;
+const MIN_CANDIDATE_FOLDERS = 12;
 
 interface FolderEvidence {
   folder: FolderSummary;
@@ -38,20 +39,42 @@ export function rankFolderCandidates(
   input: ClassificationInput,
   folders: FolderSummary[],
 ): FolderSummary[] {
-  if (folders.length <= MAX_CANDIDATE_FOLDERS) return folders;
+  const totalBytes = folders.reduce((sum, folder) => sum + estimateFolderBytes(folder), 0);
+  if (totalBytes <= MAX_CANDIDATE_BUDGET_BYTES) return folders;
   const ranked = scoreFolders(input, folders);
   const top = ranked[0];
   if (!top || !hasMeaningfulEvidence(top, ranked[1])) return folders;
 
+  const selected: FolderSummary[] = [];
+  let budget = MAX_CANDIDATE_BUDGET_BYTES;
+  for (const { folder } of ranked) {
+    const cost = estimateFolderBytes(folder);
+    if (cost > budget) {
+      if (selected.length >= MIN_CANDIDATE_FOLDERS) break;
+      // Floor: keep id/name/path so small-but-fat trees still surface the full taxonomy.
+      const { samples: _samples, ...slim } = folder;
+      selected.push(slim);
+      continue;
+    }
+    selected.push(folder);
+    budget -= cost;
+  }
   const current = input.currentFolderId
     ? folders.find((folder) => folder.id === input.currentFolderId)
     : undefined;
-  const selected = ranked.slice(0, MAX_CANDIDATE_FOLDERS).map((candidate) => candidate.folder);
   if (current && !selected.some((folder) => folder.id === current.id)) {
     selected.pop();
     selected.push(current);
   }
   return selected;
+}
+
+function estimateFolderBytes(folder: FolderSummary): number {
+  let size = folder.name.length + folder.path.length + 40;
+  for (const sample of (folder.samples ?? []).slice(0, 3)) {
+    size += sample.title.length + sample.url.length + sample.hostname.length + 20;
+  }
+  return size;
 }
 
 export function classifyWithRules(

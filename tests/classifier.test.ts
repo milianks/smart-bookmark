@@ -105,7 +105,7 @@ describe('ClassificationService', () => {
     expect(result).toMatchObject({ action: 'move', targetFolderId: 'frontend' });
   });
 
-  it('URL 路径参与目录匹配，并在强信号时限制 AI 候选数量', () => {
+  it('URL 路径参与目录匹配，预算内的目录全部交给 AI', () => {
     const folders: FolderSummary[] = [
       { id: 'current', name: '待分类', path: '智能书签 / 待分类' },
       { id: 'react', name: 'React', path: '智能书签 / 开发 / React' },
@@ -117,10 +117,32 @@ describe('ClassificationService', () => {
     };
 
     expect(classifyWithRules(input, folders)).toMatchObject({ action: 'move', targetFolderId: 'react' });
+    expect(rankFolderCandidates(input, folders)).toHaveLength(8);
+  });
+
+  it('超出候选预算时按排序截断并始终保留当前目录', () => {
+    const fatSample = (id: string) => ({
+      title: 'x'.repeat(400),
+      url: `https://${id}.test/${'y'.repeat(400)}`,
+      hostname: `${id}.test`,
+    });
+    const folders: FolderSummary[] = [
+      { id: 'current', name: '待分类', path: '智能书签 / 待分类' },
+      { id: 'react', name: 'React', path: '智能书签 / 开发 / React' },
+      ...Array.from({ length: 24 }, (_, index) => ({
+        id: `bulk-${index}`, name: `bulk ${index}`, path: `智能书签 / bulk ${index}`,
+        samples: [fatSample(`bulk${index}`), fatSample(`bx${index}`), fatSample(`by${index}`)],
+      })),
+    ];
+    const input = {
+      title: 'Hooks guide', url: 'https://example.com/react/hooks', domain: 'example.com',
+      currentFolder: '智能书签 / 待分类', currentFolderId: 'current',
+    };
+
     const candidates = rankFolderCandidates(input, folders);
-    expect(candidates).toHaveLength(6);
-    expect(candidates.some((folder) => folder.id === 'current')).toBe(true);
+    expect(candidates.length).toBeLessThan(folders.length);
     expect(candidates.some((folder) => folder.id === 'react')).toBe(true);
+    expect(candidates.some((folder) => folder.id === 'current')).toBe(true);
   });
 
   it('多级目录的父级路径参与标题和域名匹配', () => {
