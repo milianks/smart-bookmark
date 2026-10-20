@@ -36,6 +36,8 @@ describe('OpenAICompatibleProvider', () => {
 
     expect(messages[0]?.content).toContain('选择 keep');
     expect(messages[0]?.content).toContain('不要创建文件夹');
+    expect(messages[0]?.content).toContain('名称语言与所选父目录下现有子目录名保持一致');
+    expect(messages[0]?.content).toContain('泛目录只有在没有任何具体主题目录匹配时才可选');
     expect(messages[1]?.content).toContain('react.dev');
     expect(messages[1]?.content).toContain('samples');
   });
@@ -52,6 +54,7 @@ describe('OpenAICompatibleProvider', () => {
           model: 'test-model',
           messages: [{ role: 'system' }, { role: 'user' }],
           max_tokens: 500,
+          temperature: 0.1,
         });
       },
     },
@@ -67,6 +70,7 @@ describe('OpenAICompatibleProvider', () => {
         expect(JSON.parse(String(init.body))).toMatchObject({
           model: 'test-model',
           max_tokens: 500,
+          temperature: 0.1,
           system: expect.any(String),
           messages: [{ role: 'user', content: expect.any(String) }],
         });
@@ -83,6 +87,7 @@ describe('OpenAICompatibleProvider', () => {
           instructions: expect.any(String),
           input: expect.any(String),
           max_output_tokens: 500,
+          temperature: 0.1,
         });
       },
     },

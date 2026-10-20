@@ -172,6 +172,7 @@ function buildRequestBody(config: ProviderConfig, messages: ClassificationMessag
     return {
       model: config.model,
       max_tokens: 500,
+      temperature: 0.1,
       system: messages[0]?.content ?? '',
       messages: [{ role: 'user', content: messages[1]?.content ?? '' }],
     };
@@ -182,6 +183,7 @@ function buildRequestBody(config: ProviderConfig, messages: ClassificationMessag
       instructions: messages[0]?.content ?? '',
       input: messages[1]?.content ?? '',
       max_output_tokens: 500,
+      temperature: 0.1,
     };
   }
   return {
