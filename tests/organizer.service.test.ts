@@ -60,7 +60,7 @@ class FakeBookmarks implements BookmarkPort {
   }
   async getFoldersWithinRoot(rootId: string): Promise<FolderSummary[]> {
     if (rootId !== 'smart-root') return [];
-    return (await this.getFolders()).filter((folder) => folder.id === 'smart-root' || folder.id === 'dev' || folder.id === 'nested' || folder.id.startsWith('folder-'));
+    return (await this.getFolders()).filter((folder) => folder.id === 'smart-root' || folder.id === 'dev' || folder.id === 'nested' || folder.id === 'archive' || folder.id.startsWith('folder-'));
   }
   async isValidTargetFolder(targetFolderId: string, rootId: string): Promise<boolean> {
     return (await this.getFoldersWithinRoot(rootId)).some((folder) => folder.id === targetFolderId);
@@ -217,6 +217,25 @@ describe('OrganizerService', () => {
     expect(bookmarks.moves).toHaveLength(0);
     expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('smart-root');
     expect((await store.load()).reviews['b1']?.status).toBe('rejected');
+  });
+
+  it('重复书签直接生成移入归档的待确认建议，不调用 AI', async () => {
+    bookmarks.addFolder('archive', '🗄️ 归档', 'smart-root');
+    await store.update((state) => {
+      state.jobs.b1 = {
+        bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
+        status: 'queued', attempts: 0, createdAt: 1, updatedAt: 1, scanId: 'scan-x', duplicateOf: 'kept-1',
+      };
+    });
+
+    await organizer.processPending();
+
+    expect(classifier.classify).not.toHaveBeenCalled();
+    const review = (await store.load()).reviews.b1;
+    expect(review).toMatchObject({ status: 'pending', source: 'rule' });
+    expect(review?.classification).toMatchObject({ action: 'move', targetFolderId: 'archive', confidence: 1 });
+    expect(review?.targetFolderPath).toContain('归档');
+    expect(review?.classification.reason).toContain('重复书签');
   });
 
   it('AI 失败时书签留在原位并记录失败', async () => {

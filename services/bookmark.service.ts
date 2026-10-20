@@ -30,6 +30,8 @@ export interface SmartBookmarkRootInitialization {
   defaultsCreated: number;
 }
 
+export const SMART_ARCHIVE_FOLDER_NAME = '🗄️ 归档';
+
 export const SMART_BOOKMARK_DEFAULT_FOLDERS = [
   '📥 待分类',
   '💼 工作',
@@ -41,7 +43,7 @@ export const SMART_BOOKMARK_DEFAULT_FOLDERS = [
   '🛠️ 工具',
   '🎨 灵感',
   '🌿 生活',
-  '🗄️ 归档',
+  SMART_ARCHIVE_FOLDER_NAME,
 ] as const;
 
 const MAX_FOLDER_SAMPLES = 3;

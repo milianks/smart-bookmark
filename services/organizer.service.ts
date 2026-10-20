@@ -2,7 +2,7 @@ import { appendActivity, pruneJobs } from './activity-log';
 import { historicalScanSummary, refreshHistoricalScan } from './scan-state';
 import { ProviderError } from '../lib/ai/openai-compatible';
 import { PermissionRequiredError, type ClassifierPort } from './classifier.service';
-import { type BookmarkPort, type BookmarkNode } from './bookmark.service';
+import { type BookmarkPort, type BookmarkNode, SMART_ARCHIVE_FOLDER_NAME } from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
 import { createId } from '../lib/utils/ids';
 import type {
@@ -517,41 +517,10 @@ export class OrganizerService {
         await this.failJob(id, '当前文件夹已不存在，书签保持原位。', false);
         return;
       }
-      let classified: ClassifiedResult;
-      try {
-        const hasPermission = await this.deps.hasProviderPermission(state.settings.baseUrl);
-        classified = await this.deps.classifier.classify({
-          title: bookmark.title || '(无标题)',
-          url: bookmark.url ?? '',
-          domain: new URL(bookmark.url ?? '').hostname,
-          currentFolder: currentFolder.path,
-          currentFolderId: currentFolder.id,
-        }, folders, state.settings, hasPermission);
-      } catch (error) {
-        if (error instanceof PermissionRequiredError) {
-          await this.updateJob(id, (current) => {
-            current.status = 'awaiting_permission';
-            current.lastError = error.message;
-            current.updatedAt = this.now();
-          });
-          await this.notifyFailure(id, state.settings);
-          return;
-        }
-        if (error instanceof ProviderError && error.retryable && job.attempts < MAX_RETRIES) {
-          const delay = 1_500 * (2 ** job.attempts);
-          await this.updateJob(id, (current) => {
-            current.status = 'queued';
-            current.attempts += 1;
-            current.nextAttemptAt = this.now() + delay;
-            current.lastError = error.message;
-            current.updatedAt = this.now();
-          });
-          await this.deps.alarms.schedule(delay);
-          return;
-        }
-        await this.failJob(id, error instanceof Error ? error.message : 'AI 分类失败，书签保持原位。', false, state.settings);
-        return;
-      }
+      const classified = job.duplicateOf
+        ? await this.classifyDuplicate(id, job, folders, state.settings)
+        : await this.classifyViaProvider(id, job, bookmark, currentFolder, folders, state.settings);
+      if (!classified) return;
       if (!validResultTargets(classified, folders)) {
         await this.failJob(id, '分类建议中的文件夹已不存在，书签保持原位。', false, state.settings);
         return;
@@ -595,6 +564,72 @@ export class OrganizerService {
       if (historical) await this.refreshHistoricalScan(historical);
       void this.processPending();
     }
+  }
+
+  private async classifyViaProvider(
+    id: string,
+    job: BookmarkJob,
+    bookmark: BookmarkNode,
+    currentFolder: FolderSummary,
+    folders: FolderSummary[],
+    settings: Settings,
+  ): Promise<ClassifiedResult | undefined> {
+    try {
+      const hasPermission = await this.deps.hasProviderPermission(settings.baseUrl);
+      return await this.deps.classifier.classify({
+        title: bookmark.title || '(无标题)',
+        url: bookmark.url ?? '',
+        domain: new URL(bookmark.url ?? '').hostname,
+        currentFolder: currentFolder.path,
+        currentFolderId: currentFolder.id,
+      }, folders, settings, hasPermission);
+    } catch (error) {
+      if (error instanceof PermissionRequiredError) {
+        await this.updateJob(id, (current) => {
+          current.status = 'awaiting_permission';
+          current.lastError = error.message;
+          current.updatedAt = this.now();
+        });
+        await this.notifyFailure(id, settings);
+        return undefined;
+      }
+      if (error instanceof ProviderError && error.retryable && job.attempts < MAX_RETRIES) {
+        const delay = 1_500 * (2 ** job.attempts);
+        await this.updateJob(id, (current) => {
+          current.status = 'queued';
+          current.attempts += 1;
+          current.nextAttemptAt = this.now() + delay;
+          current.lastError = error.message;
+          current.updatedAt = this.now();
+        });
+        await this.deps.alarms.schedule(delay);
+        return undefined;
+      }
+      await this.failJob(id, error instanceof Error ? error.message : 'AI 分类失败，书签保持原位。', false, settings);
+      return undefined;
+    }
+  }
+
+  private async classifyDuplicate(
+    id: string,
+    job: BookmarkJob,
+    folders: FolderSummary[],
+    settings: Settings,
+  ): Promise<ClassifiedResult | undefined> {
+    const archive = folders.find((folder) =>
+      folder.name === SMART_ARCHIVE_FOLDER_NAME && folder.unmodifiable !== 'managed');
+    if (!archive) {
+      await this.failJob(id, '未找到“🗄️ 归档”目录，重复书签保持原位。', false, settings);
+      return undefined;
+    }
+    const keptTitle = (await this.deps.bookmarks.getBookmark(job.duplicateOf!))?.title.trim();
+    return {
+      result: {
+        action: 'move', targetFolderId: archive.id, confidence: 1,
+        reason: keptTitle ? `重复书签：与“${keptTitle}”相同，建议移入归档。` : '重复书签：保留最早一条，其余移入归档。',
+      },
+      source: 'rule',
+    };
   }
 
   private async automaticMove(

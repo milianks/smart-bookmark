@@ -66,4 +66,42 @@ describe('ScanService', () => {
     expect(state.historicalScan?.processedCount).toBe(1);
     expect(state.historicalScan?.status).toBe('completed');
   });
+
+  it('重复 URL 归并标记 duplicateOf，保留最早添加的一条', async () => {
+    const dupTree: BookmarkNode[] = [{ id: 'root', title: '', children: [{
+      id: 'bar', title: 'Bookmarks bar', folderType: 'bookmarks-bar', children: [
+        { id: 'smart-root', title: 'bookmark 的智能书签', parentId: 'bar', children: [
+          { id: 'a1', title: 'Docs', url: 'https://example.test/docs', parentId: 'smart-root', dateAdded: 100 },
+          { id: 'a2', title: 'Docs again', url: 'https://example.test/docs#section', parentId: 'smart-root', dateAdded: 200 },
+          { id: 'a3', title: 'Docs third', url: 'https://example.test/docs/', parentId: 'smart-root', dateAdded: 300 },
+          { id: 'u1', title: 'Unique', url: 'https://example.test/unique', parentId: 'smart-root' },
+          { id: 'archive', title: '🗄️ 归档', parentId: 'smart-root', children: [] },
+        ] },
+      ],
+}] }];
+    const store = new MemoryStateRepository();
+    await store.update((state) => {
+      state.smartBookmarkRootId = 'smart-root';
+      state.smartBookmarkInitialized = true;
+      state.settings.apiKey = 'key';
+    });
+    const scanBookmarks: BookmarkPort = {
+      ...bookmarks,
+      getTree: async () => structuredClone(dupTree),
+      getFoldersWithinRoot: async () => [{ id: 'archive', name: '🗄️ 归档', path: 'bookmark 的智能书签 / 🗄️ 归档' }],
+    };
+    const scan = new ScanService({
+      bookmarks: scanBookmarks, store, processPending: async () => {},
+      approveReview: async () => {}, makeId: () => 'scan-3',
+    });
+
+    const started = await scan.startHistoricalScan();
+
+    expect(started).toEqual({ scanId: 'scan-3', eligibleTotal: 4 });
+    const state = await store.load();
+    expect(state.jobs.a1?.duplicateOf).toBeUndefined();
+    expect(state.jobs.a2?.duplicateOf).toBe('a1');
+    expect(state.jobs.a3?.duplicateOf).toBe('a1');
+    expect(state.jobs.u1?.duplicateOf).toBeUndefined();
+  });
 });

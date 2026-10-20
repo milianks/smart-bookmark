@@ -121,6 +121,7 @@ export interface BookmarkJob {
   classification?: ClassificationResult;
   classificationSource?: ClassificationSource;
   scanId?: string;
+  duplicateOf?: string;
   metadata?: BookmarkMetadata;
 }
 

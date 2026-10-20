@@ -1,7 +1,12 @@
 import { appendActivity } from './activity-log';
-import { enumerateHistoricalBookmarksWithinRoot, type BookmarkPort } from './bookmark.service';
+import {
+  SMART_ARCHIVE_FOLDER_NAME,
+  enumerateHistoricalBookmarksWithinRoot,
+  type BookmarkPort,
+  type HistoricalBookmarkCandidate,
+} from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
-import { createId } from '../lib/utils/ids';
+import { createId, normalizedUrl } from '../lib/utils/ids';
 import { refreshHistoricalScan } from './scan-state';
 
 export interface ScanServiceDependencies {
@@ -41,6 +46,7 @@ export class ScanService {
       for (const id of Object.keys(state.reviews)) existing.add(id);
       const scanId = this.makeId('scan');
       const fresh = candidates.filter((candidate) => !existing.has(candidate.id));
+      const duplicateOf = await this.markDuplicates(fresh, rootId);
       const now = this.now();
       const scan = {
         id: scanId, status: 'scanning' as const, startedAt: now, updatedAt: now,
@@ -55,6 +61,7 @@ export class ScanService {
             bookmark: candidate,
             status: current.settings.apiKey.trim() ? 'queued' : 'awaiting_configuration',
             attempts: 0, createdAt: now, updatedAt: now, scanId,
+            ...(duplicateOf.get(candidate.id) ? { duplicateOf: duplicateOf.get(candidate.id)! } : {}),
           };
         }
         appendActivity(current, {
@@ -98,5 +105,48 @@ export class ScanService {
 
   async refresh(scanId: string): Promise<void> {
     await this.deps.store.update((state) => refreshHistoricalScan(state, scanId, this.now()));
+  }
+
+  private async markDuplicates(
+    fresh: HistoricalBookmarkCandidate[],
+    rootId: string | undefined,
+  ): Promise<Map<string, string>> {
+    if (!rootId || !this.deps.bookmarks.getFoldersWithinRoot) return new Map();
+    try {
+      const folders = await this.deps.bookmarks.getFoldersWithinRoot(rootId);
+      if (!folders.some((folder) => folder.name === SMART_ARCHIVE_FOLDER_NAME)) return new Map();
+      return groupDuplicateTargets(fresh);
+    } catch {
+      return new Map();
+    }
+  }
+}
+
+/** Map duplicate bookmark id -> kept bookmark id by normalized URL; keeps the oldest add date. */
+export function groupDuplicateTargets(candidates: HistoricalBookmarkCandidate[]): Map<string, string> {
+  const groups = new Map<string, HistoricalBookmarkCandidate[]>();
+  for (const candidate of candidates) {
+    const key = safeNormalizedUrl(candidate.url);
+    if (!key) continue;
+    const group = groups.get(key);
+    if (group) group.push(candidate);
+    else groups.set(key, [candidate]);
+  }
+  const duplicateOf = new Map<string, string>();
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const sorted = [...group].sort((a, b) =>
+      (a.dateAdded ?? Number.MAX_SAFE_INTEGER) - (b.dateAdded ?? Number.MAX_SAFE_INTEGER));
+    const kept = sorted[0]!;
+    for (const duplicate of sorted.slice(1)) duplicateOf.set(duplicate.id, kept.id);
+  }
+  return duplicateOf;
+}
+
+function safeNormalizedUrl(rawUrl: string): string {
+  try {
+    return normalizedUrl(rawUrl);
+  } catch {
+    return '';
   }
 }
