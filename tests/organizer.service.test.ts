@@ -274,6 +274,43 @@ describe('OrganizerService', () => {
     expect((await store.load()).corrections['example.org']).toMatchObject({ action: 'move', folderId: 'nested' });
   });
 
+  it('历史扫描任务走批量分类，一次调用处理多条', async () => {
+    const batch = vi.fn(async (inputs: Array<{ title: string }>) =>
+      inputs.map(() => ({
+        result: { result: { action: 'move' as const, targetFolderId: 'dev', confidence: 0.55, reason: '批量建议' }, source: 'ai' as const },
+      })));
+    const batchClassifier: ClassifierPort = {
+      classify: vi.fn(),
+      classifyBatch: batch,
+      testProvider: vi.fn(),
+    };
+    const batchOrganizer = new OrganizerService({
+      bookmarks, store, classifier: batchClassifier, notifications,
+      alarms: { schedule: vi.fn() }, hasProviderPermission: async () => true,
+    });
+    bookmarks.addBookmark('b2', 'React docs', 'https://example.com/react', 'smart-root');
+    bookmarks.addBookmark('b3', 'Vue docs', 'https://example.com/vue', 'smart-root');
+    await store.update((state) => {
+      for (const id of ['b1', 'b2', 'b3']) {
+        const node = bookmarks.nodes.get(id)!;
+        state.jobs[id] = {
+          bookmark: { id, title: node.title ?? '', url: node.url ?? '', parentId: 'smart-root' },
+          status: 'queued', attempts: 0, createdAt: 1, updatedAt: 1, scanId: 'scan-batch',
+        };
+      }
+    });
+
+    await batchOrganizer.processPending();
+
+    expect(batch).toHaveBeenCalledOnce();
+    expect(batch.mock.calls[0]?.[0]).toHaveLength(3);
+    expect(batchClassifier.classify).not.toHaveBeenCalled();
+    const state = await store.load();
+    expect(state.reviews.b1?.status).toBe('pending');
+    expect(state.reviews.b2?.status).toBe('pending');
+    expect(state.reviews.b3?.status).toBe('pending');
+  });
+
   it('AI 失败时书签留在原位并记录失败', async () => {
     classifier.classify = vi.fn(async () => { throw new Error('provider unavailable'); });
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);

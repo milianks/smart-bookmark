@@ -1,7 +1,7 @@
 import { appendActivity, pruneJobs } from './activity-log';
 import { historicalScanSummary, refreshHistoricalScan } from './scan-state';
 import { ProviderError } from '../lib/ai/openai-compatible';
-import { PermissionRequiredError, type ClassifierPort } from './classifier.service';
+import { PermissionRequiredError, type BatchOutcome, type ClassifierPort } from './classifier.service';
 import { type BookmarkPort, type BookmarkNode, SMART_ARCHIVE_FOLDER_NAME } from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
 import { createId, hostnameKey } from '../lib/utils/ids';
@@ -38,7 +38,17 @@ export interface OrganizerDependencies {
 
 const MAX_CONCURRENT_CLASSIFICATIONS = 2;
 const MAX_RETRIES = 2;
+const MAX_BATCH_CLASSIFICATIONS = 15;
 const IMPORT_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
+
+interface PreparedJob {
+  id: string;
+  job: BookmarkJob;
+  bookmark: BookmarkNode;
+  folders: FolderSummary[];
+  currentFolder: FolderSummary;
+  settings: Settings;
+}
 
 export class OrganizerService {
   private readonly inFlight = new Set<string>();
@@ -204,9 +214,17 @@ export class OrganizerService {
       .filter((job) => job.status === 'queued'
         && (state.settings.enabled || Boolean(job.scanId))
         && (job.nextAttemptAt === undefined || job.nextAttemptAt <= this.now()))
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .slice(0, MAX_CONCURRENT_CLASSIFICATIONS);
-    await Promise.allSettled(readyJobs.map((job) => this.processJob(job.bookmark.id)));
+      .sort((a, b) => a.createdAt - b.createdAt);
+    const scanReady = readyJobs.filter((job) => job.scanId).slice(0, MAX_BATCH_CLASSIFICATIONS);
+    const others = readyJobs.filter((job) => !job.scanId).slice(0, MAX_CONCURRENT_CLASSIFICATIONS);
+    const tasks: Array<Promise<void>> = [];
+    if (scanReady.length > 1 && this.deps.classifier.classifyBatch) {
+      tasks.push(this.processBatch(scanReady.map((job) => job.bookmark.id)));
+    } else {
+      tasks.push(...scanReady.slice(0, MAX_CONCURRENT_CLASSIFICATIONS).map((job) => this.processJob(job.bookmark.id)));
+    }
+    tasks.push(...others.map((job) => this.processJob(job.bookmark.id)));
+    await Promise.allSettled(tasks);
     const latest = await this.deps.store.load();
     const queued = Object.values(latest.jobs).filter((job) => job.status === 'queued' && (latest.settings.enabled || Boolean(job.scanId)));
     const hasDueJobs = queued.some((job) => job.nextAttemptAt === undefined || job.nextAttemptAt <= this.now());
@@ -491,86 +509,13 @@ export class OrganizerService {
     this.inFlight.add(id);
     this.activeClassifications += 1;
     try {
-      let state = await this.deps.store.load();
-      let job = state.jobs[id];
-      if (!job || !['queued', 'processing'].includes(job.status)) return;
-      if (job.nextAttemptAt !== undefined && job.nextAttemptAt > this.now()) return;
-      if (!state.settings.enabled && !job.scanId) return;
-      if (!state.settings.apiKey.trim()) {
-        await this.updateJob(id, (current) => { current.status = 'awaiting_configuration'; });
-        return;
-      }
-      const bookmark = await this.deps.bookmarks.getBookmark(id);
-      if (!bookmark) {
-        await this.failJob(id, '书签已不存在，未执行任何移动。', false);
-        return;
-      }
-      if (bookmark.parentId !== job.bookmark.parentId) {
-        await this.skipJob(id, '书签已被手动移动，已尊重当前目录。');
-        return;
-      }
-      const rootId = state.smartBookmarkRootId;
-      if (!rootId || !this.deps.bookmarks.isWithinRoot
-        || !(await this.isWithinSmartRoot(bookmark.id, rootId))) {
-        await this.skipJob(id, '书签不在智能书签目录内，已保留原位。');
-        return;
-      }
-      await this.updateJob(id, (current) => { current.status = 'processing'; current.updatedAt = this.now(); });
-      state = await this.deps.store.load();
-      job = state.jobs[id];
-      if (!job) return;
-      const latestRootId = state.smartBookmarkRootId;
-      if (!latestRootId || !this.deps.bookmarks.isWithinRoot
-        || !(await this.isWithinSmartRoot(bookmark.id, latestRootId))) {
-        await this.skipJob(id, '智能书签目录已变化，书签保留原位。');
-        return;
-      }
-      const folders = await this.getFoldersWithinSmartRoot(latestRootId);
-      if (!folders) {
-        await this.failJob(id, '智能书签目录结构不可用，书签保持原位。', false, state.settings);
-        return;
-      }
-      const currentFolder = folders.find((folder) => folder.id === bookmark.parentId);
-      if (!currentFolder) {
-        await this.failJob(id, '当前文件夹已不存在，书签保持原位。', false);
-        return;
-      }
-      const classified = job.duplicateOf
-        ? await this.classifyDuplicate(id, job, folders, state.settings)
-        : await this.classifyViaProvider(id, job, bookmark, currentFolder, folders, state.settings);
+      const prepared = await this.prepareJob(id);
+      if (!prepared) return;
+      const classified = prepared.job.duplicateOf
+        ? await this.classifyDuplicate(prepared.id, prepared.job, prepared.folders, prepared.settings)
+        : await this.classifyViaProvider(prepared.id, prepared.job, prepared.bookmark, prepared.currentFolder, prepared.folders, prepared.settings);
       if (!classified) return;
-      if (!validResultTargets(classified, folders)) {
-        await this.failJob(id, '分类建议中的文件夹已不存在，书签保持原位。', false, state.settings);
-        return;
-      }
-      await this.updateJob(id, (current) => {
-        current.classification = classified.result;
-        current.classificationSource = classified.source;
-        current.updatedAt = this.now();
-      });
-
-      const result = classified.result;
-      if (result.action === 'keep') {
-        await this.updateJob(id, (current) => { current.status = 'completed'; });
-        await this.appendActivity({
-          kind: 'kept', bookmarkId: id, title: job.bookmark.title, url: job.bookmark.url,
-          message: result.reason, source: classified.source,
-        });
-        return;
-      }
-      if (job.scanId) {
-        await this.createReview(job, result, classified.source, folders, state.settings);
-        return;
-      }
-      if (result.action === 'suggest_folder'
-        || result.action === 'move'
-          && (state.settings.mode === 'confirm' || result.confidence < state.settings.confidenceThreshold)) {
-        await this.createReview(job, result, classified.source, folders, state.settings);
-        return;
-      }
-      if (result.action === 'move') {
-        await this.automaticMove(job, result.targetFolderId, result.reason, classified.source, result.confidence);
-      }
+      await this.applyClassification(prepared, classified);
     } catch (error) {
       const state = await this.deps.store.load();
       if (state.jobs[id]?.status === 'skipped') return;
@@ -581,6 +526,160 @@ export class OrganizerService {
       const historical = (await this.deps.store.load()).jobs[id]?.scanId;
       if (historical) await this.refreshHistoricalScan(historical);
       void this.processPending();
+    }
+  }
+
+  private async processBatch(ids: string[]): Promise<void> {
+    const batchKey = `batch:${ids.join(',')}`;
+    if (this.inFlight.has(batchKey)) return;
+    this.inFlight.add(batchKey);
+    this.activeClassifications += 1;
+    const prepared: PreparedJob[] = [];
+    try {
+      for (const id of ids) {
+        if (this.inFlight.has(id)) continue;
+        this.inFlight.add(id);
+        const item = await this.prepareJob(id);
+        if (item) prepared.push(item);
+        else this.inFlight.delete(id);
+      }
+      for (const item of prepared) {
+        if (!item.job.duplicateOf) continue;
+        const classified = await this.classifyDuplicate(item.id, item.job, item.folders, item.settings);
+        if (classified) await this.applyClassification(item, classified);
+      }
+      const batchPrepared = prepared.filter((item) => !item.job.duplicateOf);
+      if (batchPrepared.length === 0) return;
+      if (!this.deps.classifier.classifyBatch) {
+        for (const item of batchPrepared) {
+          const classified = await this.classifyViaProvider(item.id, item.job, item.bookmark, item.currentFolder, item.folders, item.settings);
+          if (classified) await this.applyClassification(item, classified);
+        }
+        return;
+      }
+      let outcomes: BatchOutcome[] | undefined;
+      try {
+        const hasPermission = await this.deps.hasProviderPermission(batchPrepared[0]!.settings.baseUrl);
+        outcomes = await this.deps.classifier.classifyBatch(
+          batchPrepared.map((item) => ({
+            title: item.bookmark.title || '(无标题)',
+            url: item.bookmark.url ?? '',
+            domain: new URL(item.bookmark.url ?? '').hostname,
+            currentFolder: item.currentFolder.path,
+            currentFolderId: item.currentFolder.id,
+          })),
+          batchPrepared[0]!.folders,
+          batchPrepared[0]!.settings,
+          hasPermission,
+        );
+      } catch (error) {
+        for (const item of batchPrepared) await this.handleClassifyError(item.id, item.job, item.settings, error);
+        return;
+      }
+      for (const [index, item] of batchPrepared.entries()) {
+        const outcome = outcomes[index];
+        if (!outcome) continue;
+        if ('error' in outcome) {
+          await this.handleClassifyError(item.id, item.job, item.settings, outcome.error);
+          continue;
+        }
+        try {
+          await this.applyClassification(item, outcome.result);
+        } catch (error) {
+          await this.handleClassifyError(item.id, item.job, item.settings, error);
+        }
+      }
+    } finally {
+      this.inFlight.delete(batchKey);
+      for (const id of ids) this.inFlight.delete(id);
+      this.activeClassifications -= 1;
+      const scanId = (await this.deps.store.load()).jobs[ids[0] ?? '']?.scanId;
+      if (scanId) await this.refreshHistoricalScan(scanId);
+      void this.processPending();
+    }
+  }
+
+  private async prepareJob(id: string): Promise<PreparedJob | null> {
+    let state = await this.deps.store.load();
+    let job = state.jobs[id];
+    if (!job || !['queued', 'processing'].includes(job.status)) return null;
+    if (job.nextAttemptAt !== undefined && job.nextAttemptAt > this.now()) return null;
+    if (!state.settings.enabled && !job.scanId) return null;
+    if (!state.settings.apiKey.trim()) {
+      await this.updateJob(id, (current) => { current.status = 'awaiting_configuration'; });
+      return null;
+    }
+    const bookmark = await this.deps.bookmarks.getBookmark(id);
+    if (!bookmark) {
+      await this.failJob(id, '书签已不存在，未执行任何移动。', false);
+      return null;
+    }
+    if (bookmark.parentId !== job.bookmark.parentId) {
+      await this.skipJob(id, '书签已被手动移动，已尊重当前目录。');
+      return null;
+    }
+    const rootId = state.smartBookmarkRootId;
+    if (!rootId || !this.deps.bookmarks.isWithinRoot
+      || !(await this.isWithinSmartRoot(bookmark.id, rootId))) {
+      await this.skipJob(id, '书签不在智能书签目录内，已保留原位。');
+      return null;
+    }
+    await this.updateJob(id, (current) => { current.status = 'processing'; current.updatedAt = this.now(); });
+    state = await this.deps.store.load();
+    job = state.jobs[id];
+    if (!job) return null;
+    const latestRootId = state.smartBookmarkRootId;
+    if (!latestRootId || !this.deps.bookmarks.isWithinRoot
+      || !(await this.isWithinSmartRoot(bookmark.id, latestRootId))) {
+      await this.skipJob(id, '智能书签目录已变化，书签保留原位。');
+      return null;
+    }
+    const folders = await this.getFoldersWithinSmartRoot(latestRootId);
+    if (!folders) {
+      await this.failJob(id, '智能书签目录结构不可用，书签保持原位。', false, state.settings);
+      return null;
+    }
+    const currentFolder = folders.find((folder) => folder.id === bookmark.parentId);
+    if (!currentFolder) {
+      await this.failJob(id, '当前文件夹已不存在，书签保持原位。', false);
+      return null;
+    }
+    return { id, job, bookmark, folders, currentFolder, settings: state.settings };
+  }
+
+  private async applyClassification(prepared: PreparedJob, classified: ClassifiedResult): Promise<void> {
+    const { id, job, folders, settings } = prepared;
+    if (!validResultTargets(classified, folders)) {
+      await this.failJob(id, '分类建议中的文件夹已不存在，书签保持原位。', false, settings);
+      return;
+    }
+    await this.updateJob(id, (current) => {
+      current.classification = classified.result;
+      current.classificationSource = classified.source;
+      current.updatedAt = this.now();
+    });
+
+    const result = classified.result;
+    if (result.action === 'keep') {
+      await this.updateJob(id, (current) => { current.status = 'completed'; });
+      await this.appendActivity({
+        kind: 'kept', bookmarkId: id, title: job.bookmark.title, url: job.bookmark.url,
+        message: result.reason, source: classified.source,
+      });
+      return;
+    }
+    if (job.scanId) {
+      await this.createReview(job, result, classified.source, folders, settings);
+      return;
+    }
+    if (result.action === 'suggest_folder'
+      || result.action === 'move'
+        && (settings.mode === 'confirm' || result.confidence < settings.confidenceThreshold)) {
+      await this.createReview(job, result, classified.source, folders, settings);
+      return;
+    }
+    if (result.action === 'move') {
+      await this.automaticMove(job, result.targetFolderId, result.reason, classified.source, result.confidence);
     }
   }
 
@@ -602,31 +701,38 @@ export class OrganizerService {
         currentFolderId: currentFolder.id,
       }, folders, settings, hasPermission);
     } catch (error) {
-      if (error instanceof PermissionRequiredError) {
-        await this.updateJob(id, (current) => {
-          current.status = 'awaiting_permission';
-          current.lastError = error.message;
-          current.updatedAt = this.now();
-        });
-        await this.notifyFailure(id, settings);
-        return undefined;
-      }
-      if (error instanceof ProviderError && error.retryable && job.attempts < MAX_RETRIES) {
-        const delay = 1_500 * (2 ** job.attempts);
-        await this.updateJob(id, (current) => {
-          current.status = 'queued';
-          current.attempts += 1;
-          current.nextAttemptAt = this.now() + delay;
-          current.lastError = error.message;
-          current.updatedAt = this.now();
-        });
-        await this.deps.alarms.schedule(delay);
-        return undefined;
-      }
-      await this.failJob(id, error instanceof Error ? error.message : 'AI 分类失败，书签保持原位。', false, settings);
+      await this.handleClassifyError(id, job, settings, error);
       return undefined;
     }
   }
+
+  private async handleClassifyError(id: string, job: BookmarkJob, settings: Settings, error: unknown): Promise<void> {
+    const current = (await this.deps.store.load()).jobs[id];
+    if (current?.status === 'skipped') return;
+    if (error instanceof PermissionRequiredError) {
+      await this.updateJob(id, (pending) => {
+        pending.status = 'awaiting_permission';
+        pending.lastError = error.message;
+        pending.updatedAt = this.now();
+      });
+      await this.notifyFailure(id, settings);
+      return;
+    }
+    if (error instanceof ProviderError && error.retryable && job.attempts < MAX_RETRIES) {
+      const delay = 1_500 * (2 ** job.attempts);
+      await this.updateJob(id, (pending) => {
+        pending.status = 'queued';
+        pending.attempts += 1;
+        pending.nextAttemptAt = this.now() + delay;
+        pending.lastError = error.message;
+        pending.updatedAt = this.now();
+      });
+      await this.deps.alarms.schedule(delay);
+      return;
+    }
+    await this.failJob(id, error instanceof Error ? error.message : 'AI 分类失败，书签保持原位。', false, settings);
+  }
+
 
   private async classifyDuplicate(
     id: string,

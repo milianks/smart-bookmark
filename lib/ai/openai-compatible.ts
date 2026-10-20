@@ -1,5 +1,6 @@
+import { z } from 'zod';
 import { ClassificationResultSchema, SummaryTagResultSchema, type ClassificationResult, type FolderSummary, type SummaryTagResult } from '../../types/domain';
-import { buildClassificationMessages, buildMetadataMessages, type BookmarkMetadataInput, type ClassificationInput, type RecentCorrection } from './prompts';
+import { buildBatchMessages, buildClassificationMessages, buildMetadataMessages, type BookmarkMetadataInput, type ClassificationInput, type RecentCorrection } from './prompts';
 import { normalizeBaseUrl, providerUrl, type ProviderConfig } from './provider-config';
 
 const MAX_RESPONSE_BYTES = 64 * 1024;
@@ -13,8 +14,13 @@ export class ProviderError extends Error {
   }
 }
 
+const BatchResultSchema = z.object({
+  results: z.array(ClassificationResultSchema.and(z.object({ index: z.number().int().min(0) }))),
+});
+
 export interface ClassifierProvider {
   classify(input: ClassificationInput, folders: FolderSummary[], config: ProviderConfig, recentCorrections?: RecentCorrection[]): Promise<ClassificationResult>;
+  classifyBatch?(inputs: ClassificationInput[], folders: FolderSummary[], config: ProviderConfig, recentCorrections?: RecentCorrection[]): Promise<ClassificationResult[]>;
   generateMetadata?(input: BookmarkMetadataInput, config: ProviderConfig): Promise<SummaryTagResult>;
   test(config: ProviderConfig): Promise<void>;
 }
@@ -39,6 +45,30 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     const result = ClassificationResultSchema.safeParse(parsed);
     if (!result.success) throw new ProviderError('AI 分类结果不符合安全格式，书签已保留原位', false);
     return result.data;
+  }
+
+  async classifyBatch(
+    inputs: ClassificationInput[],
+    folders: FolderSummary[],
+    config: ProviderConfig,
+    recentCorrections?: RecentCorrection[],
+  ): Promise<ClassificationResult[]> {
+    if (inputs.length === 0) return [];
+    const messages = buildBatchMessages(inputs, folders, recentCorrections);
+    const payload = await this.request(config, buildRequestBody(config, messages, 4_000));
+    const content = extractClassificationText(payload, config.protocol);
+    const parsed = parseJsonContent(content);
+    const batch = BatchResultSchema.safeParse(parsed);
+    if (!batch.success) throw new ProviderError('AI 批量结果不符合安全格式', false);
+    const byIndex = new Map<number, ClassificationResult>();
+    for (const entry of batch.data.results) {
+      if (entry.index >= inputs.length || byIndex.has(entry.index)) {
+        throw new ProviderError('AI 批量结果 index 不完整或重复', true);
+      }
+      byIndex.set(entry.index, entry);
+    }
+    if (byIndex.size !== inputs.length) throw new ProviderError('AI 批量结果缺少某些书签', true);
+    return inputs.map((_, index) => byIndex.get(index)!);
   }
 
   async generateMetadata(input: BookmarkMetadataInput, config: ProviderConfig): Promise<SummaryTagResult> {
@@ -168,11 +198,11 @@ function validateMigrationBaseUrl(rawBaseUrl?: string): string | undefined {
 
 type ClassificationMessage = { role: 'system' | 'user'; content: string };
 
-function buildRequestBody(config: ProviderConfig, messages: ClassificationMessage[]): Record<string, unknown> {
+function buildRequestBody(config: ProviderConfig, messages: ClassificationMessage[], maxTokens = 500): Record<string, unknown> {
   if (config.protocol === 'anthropic-messages') {
     return {
       model: config.model,
-      max_tokens: 500,
+      max_tokens: maxTokens,
       temperature: 0.1,
       system: messages[0]?.content ?? '',
       messages: [{ role: 'user', content: messages[1]?.content ?? '' }],
@@ -183,7 +213,7 @@ function buildRequestBody(config: ProviderConfig, messages: ClassificationMessag
       model: config.model,
       instructions: messages[0]?.content ?? '',
       input: messages[1]?.content ?? '',
-      max_output_tokens: 500,
+      max_output_tokens: maxTokens,
       temperature: 0.1,
     };
   }
@@ -191,7 +221,7 @@ function buildRequestBody(config: ProviderConfig, messages: ClassificationMessag
     model: config.model,
     messages,
     temperature: 0.1,
-    max_tokens: 500,
+    max_tokens: maxTokens,
   };
 }
 

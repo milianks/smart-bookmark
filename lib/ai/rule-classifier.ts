@@ -77,6 +77,24 @@ function estimateFolderBytes(folder: FolderSummary): number {
   return size;
 }
 
+/** Keep folders in order until the serialized budget is exhausted (floor 12, samples stripped). */
+export function trimFolderBudget(folders: FolderSummary[]): FolderSummary[] {
+  let budget = MAX_CANDIDATE_BUDGET_BYTES;
+  const selected: FolderSummary[] = [];
+  for (const folder of folders) {
+    const cost = estimateFolderBytes(folder);
+    if (cost > budget) {
+      if (selected.length >= MIN_CANDIDATE_FOLDERS) break;
+      const { samples: _samples, ...slim } = folder;
+      selected.push(slim);
+      continue;
+    }
+    selected.push(folder);
+    budget -= cost;
+  }
+  return selected;
+}
+
 export function classifyWithRules(
   input: ClassificationInput,
   folders: FolderSummary[],

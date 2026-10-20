@@ -326,11 +326,45 @@ describe('ClassificationService', () => {
 
     expect(provider.classify).toHaveBeenCalledTimes(2);
   });
-});
 
+  it('批量分类混合本地命中与单次批量 AI 调用', async () => {
+    const provider = createProvider();
+    const service = new ClassificationService(provider, new MemoryStateRepository());
+
+    const results = await service.classifyBatch?.([
+      { title: 'GitHub programming developer repository', url: 'https://github.com/example/repo', domain: 'github.com', currentFolder: 'Bookmarks bar', currentFolderId: 'bar' },
+      { title: 'Unusual page', url: 'https://example.com/random', domain: 'example.com', currentFolder: 'Bookmarks bar', currentFolderId: 'bar' },
+    ], folders, { ...DEFAULT_SETTINGS, apiKey: 'test-key' }, true);
+
+    expect(results?.[0]).toMatchObject({ result: { result: { action: 'move', targetFolderId: 'development' }, source: 'rule' } });
+    expect(results?.[1]).toMatchObject({ result: { source: 'ai' } });
+    const batchMock = vi.mocked(provider.classifyBatch);
+    expect(batchMock).toHaveBeenCalledOnce();
+    expect(batchMock?.mock.calls[0]?.[0] ?? []).toHaveLength(1);
+  });
+
+  it('批量结果引用不存在目录时仅该条失败', async () => {
+    const provider = createProvider();
+    provider.classifyBatch = vi.fn(async () => [
+      { action: 'move' as const, targetFolderId: 'ghost', confidence: 0.9, reason: '无效目录' },
+      { action: 'keep' as const, confidence: 0.4, reason: '保留。' },
+    ]);
+    const service = new ClassificationService(provider, new MemoryStateRepository());
+
+    const results = await service.classifyBatch?.([
+      { title: 'Unusual page', url: 'https://example.com/random', domain: 'example.com', currentFolder: 'Bookmarks bar', currentFolderId: 'bar' },
+      { title: 'Other page', url: 'https://example.com/other', domain: 'example.com', currentFolder: 'Bookmarks bar', currentFolderId: 'bar' },
+    ], folders, { ...DEFAULT_SETTINGS, apiKey: 'test-key' }, true);
+
+    expect(results?.[0]).toMatchObject({ error: { message: expect.stringContaining('不存在') } });
+    expect(results?.[1]).toMatchObject({ result: { result: { action: 'keep' } } });
+  });
+});
 function createProvider(): ClassifierProvider {
   return {
     classify: vi.fn(async () => ({ action: 'keep' as const, confidence: 0.4, reason: '没有明显分类。' })),
+    classifyBatch: vi.fn(async (inputs: unknown[]) =>
+      inputs.map(() => ({ action: 'keep' as const, confidence: 0.4, reason: '没有明显分类。' }))),
     test: vi.fn(async () => undefined),
   };
 }

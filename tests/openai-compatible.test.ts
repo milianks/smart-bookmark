@@ -53,6 +53,37 @@ describe('OpenAICompatibleProvider', () => {
     expect(messages[1]?.content).toContain('react.dev');
   });
 
+  it('批量分类一次请求返回按 index 对齐的结果', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ results: [
+        { index: 1, action: 'keep', confidence: 0.4, reason: '第二个保留。' },
+        { index: 0, action: 'keep', confidence: 0.5, reason: '第一个保留。' },
+      ] }) } }],
+    }), { status: 200 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+    const inputs = [input, { ...input, url: 'https://example.com/page2' }];
+
+    const results = await provider.classifyBatch(inputs, [], { ...baseConfig, protocol: 'openai-chat-completions' });
+
+    expect(results).toHaveLength(2);
+    expect(results[0]).toMatchObject({ reason: '第一个保留。' });
+    expect(results[1]).toMatchObject({ reason: '第二个保留。' });
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({ max_tokens: 4000 });
+  });
+
+  it('批量结果缺少 index 时判定可重试失败', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ results: [
+        { index: 0, action: 'keep', confidence: 0.4, reason: 'only one' },
+      ] }) } }],
+    }), { status: 200 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    await expect(provider.classifyBatch([input, input], [], { ...baseConfig, protocol: 'openai-chat-completions' }))
+      .rejects.toThrow('AI 批量结果缺少某些书签');
+  });
+
   it.each([
     {
       protocol: 'openai-chat-completions' as const,

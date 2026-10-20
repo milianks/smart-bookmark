@@ -11,7 +11,7 @@ import { hostnameKey, normalizedUrl, stableFingerprint } from '../lib/utils/ids'
 import type { ClassificationInput, RecentCorrection } from '../lib/ai/prompts';
 import type { ClassifierProvider } from '../lib/ai/openai-compatible';
 import { ProviderError } from '../lib/ai/openai-compatible';
-import { classifyWithRules, rankFolderCandidates } from '../lib/ai/rule-classifier';
+import { classifyWithRules, rankFolderCandidates, trimFolderBudget } from '../lib/ai/rule-classifier';
 import { normalizeBaseUrl } from '../lib/ai/provider-config';
 
 export class PermissionRequiredError extends Error {
@@ -28,6 +28,12 @@ export interface ClassifierPort {
     settings: Settings,
     hasProviderPermission: boolean,
   ): Promise<ClassifiedResult>;
+  classifyBatch?(
+    inputs: ClassificationInput[],
+    folders: FolderSummary[],
+    settings: Settings,
+    hasProviderPermission: boolean,
+  ): Promise<BatchOutcome[]>;
   testProvider?(settings: Settings): Promise<void>;
 }
 
@@ -79,6 +85,61 @@ export class ClassificationService implements ClassifierPort {
     return { result, source: 'ai' };
   }
 
+  async classifyBatch(
+    inputs: ClassificationInput[],
+    folders: FolderSummary[],
+    settings: Settings,
+    hasProviderPermission: boolean,
+  ): Promise<BatchOutcome[]> {
+    if (!settings.apiKey.trim()) throw new ProviderError('请先在设置中配置 API Key。', false);
+    const snapshot = await this.store.load();
+    const outcomes: BatchOutcome[] = new Array<BatchOutcome>(inputs.length);
+    const pendingInputs: ClassificationInput[] = [];
+    const pendingPositions: number[] = [];
+    for (const [index, input] of inputs.entries()) {
+      const cacheKey = makeCacheKey(input, folders, settings);
+      const cached = snapshot.cache[cacheKey];
+      if (cached && resultReferencesFolders(cached.result, folders)) {
+        outcomes[index] = { result: { result: cached.result, source: 'cache' } };
+        continue;
+      }
+      const corrected = applyCorrection(snapshot.corrections[hostnameKey(input.domain)], input, folders);
+      if (corrected) {
+        outcomes[index] = { result: { result: corrected, source: 'rule' } };
+        continue;
+      }
+      const localResult = classifyWithRules(input, folders);
+      if (localResult && localResult.confidence >= settings.confidenceThreshold) {
+        await cacheResult(this.store, cacheKey, localResult, 'cache');
+        outcomes[index] = { result: { result: localResult, source: 'rule' } };
+        continue;
+      }
+      pendingInputs.push(input);
+      pendingPositions.push(index);
+    }
+    if (pendingInputs.length === 0) return outcomes;
+    if (!hasProviderPermission) throw new PermissionRequiredError();
+
+    const providerFolders = batchProviderFolders(pendingInputs, folders);
+    const results = await this.provider.classifyBatch?.(pendingInputs, providerFolders, {
+      protocol: settings.protocol,
+      baseUrl: normalizeBaseUrl(settings.baseUrl),
+      model: settings.model,
+      apiKey: settings.apiKey,
+    }, recentUserDecisions(snapshot.corrections, folders));
+    if (!results) throw new ProviderError('当前分类服务不支持批量分类。', false);
+    for (const [position, result] of results.entries()) {
+      const index = pendingPositions[position]!;
+      if (!resultReferencesFolders(result, folders)) {
+        outcomes[index] = { error: new ProviderError('AI 推荐了当前书签树中不存在的文件夹，书签已保留原位。', false) };
+        continue;
+      }
+      await cacheResult(this.store, makeCacheKey(pendingInputs[position]!, folders, settings), result, 'ai');
+      outcomes[index] = { result: { result, source: 'ai' } };
+    }
+    return outcomes;
+  }
+
   async testProvider(settings: Settings): Promise<void> {
     if (!settings.apiKey.trim()) throw new ProviderError('请先配置 API Key。', false);
     await this.provider.test({
@@ -88,6 +149,16 @@ export class ClassificationService implements ClassifierPort {
       apiKey: settings.apiKey,
     });
   }
+}
+
+export type BatchOutcome = { result: ClassifiedResult } | { error: ProviderError };
+
+function batchProviderFolders(inputs: ClassificationInput[], folders: FolderSummary[]): FolderSummary[] {
+  const union = new Map<string, FolderSummary>();
+  for (const input of inputs.slice(0, 8)) {
+    for (const folder of rankFolderCandidates(input, folders)) union.set(folder.id, folder);
+  }
+  return trimFolderBudget([...union.values()]);
 }
 
 function makeCacheKey(input: ClassificationInput, folders: FolderSummary[], settings: Settings): string {
