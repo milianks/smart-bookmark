@@ -11,6 +11,7 @@ const SettingsPatchSchema = z.object({
   confidenceThreshold: z.number().min(0.5).max(1).optional(),
   mode: z.enum(['automatic', 'confirm']).optional(),
   forceOrganize: z.boolean().optional(),
+  organizeExternalRoots: z.boolean().optional(),
   notificationsEnabled: z.boolean().optional(),
   successNotifications: z.boolean().optional(),
   apiKey: z.string().max(4_000).optional(),

@@ -21,6 +21,7 @@ const dashboard: DashboardState = {
     forceOrganize: DEFAULT_SETTINGS.forceOrganize,
     notificationsEnabled: DEFAULT_SETTINGS.notificationsEnabled,
     successNotifications: DEFAULT_SETTINGS.successNotifications,
+    organizeExternalRoots: DEFAULT_SETTINGS.organizeExternalRoots,
     hasApiKey: true,
   },
   pendingReviews: [],

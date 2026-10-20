@@ -311,6 +311,34 @@ describe('OrganizerService', () => {
     expect(state.reviews.b3?.status).toBe('pending');
   });
 
+  it('开启外部根接管后处理书签栏新增并支持撤销', async () => {
+    await store.update((state) => { state.settings.organizeExternalRoots = true; });
+    const node = bookmarks.addBookmark('ext-1', 'External guide', 'https://example.com/ext', 'bar');
+    await organizer.onBookmarkCreated('ext-1', node);
+
+    expect(classifier.classify).toHaveBeenCalledOnce();
+    expect((await bookmarks.getBookmark('ext-1'))?.parentId).toBe('dev');
+    let state = await store.load();
+    expect(state.jobs['ext-1']?.externalRoot).toBe(true);
+
+    await organizer.undoLastMove();
+    expect((await bookmarks.getBookmark('ext-1'))?.parentId).toBe('bar');
+    state = await store.load();
+    expect(state.undoStack).toHaveLength(0);
+  });
+
+  it('外部根书签低置信度保留原位，确认后移入智能目录', async () => {
+    await store.update((state) => { state.settings.organizeExternalRoots = true; });
+    result = { action: 'move', targetFolderId: 'dev', confidence: 0.6, reason: '需要确认' };
+    const node = bookmarks.addBookmark('ext-2', 'External low', 'https://example.com/low', 'bar');
+    await organizer.onBookmarkCreated('ext-2', node);
+
+    expect((await bookmarks.getBookmark('ext-2'))?.parentId).toBe('bar');
+    expect((await store.load()).reviews['ext-2']?.status).toBe('pending');
+    await organizer.approveReview('ext-2');
+    expect((await bookmarks.getBookmark('ext-2'))?.parentId).toBe('dev');
+  });
+
   it('AI 失败时书签留在原位并记录失败', async () => {
     classifier.classify = vi.fn(async () => { throw new Error('provider unavailable'); });
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);

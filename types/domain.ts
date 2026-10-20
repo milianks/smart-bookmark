@@ -56,6 +56,7 @@ export const SettingsSchema = z.object({
   forceOrganize: z.boolean(),
   notificationsEnabled: z.boolean(),
   successNotifications: z.boolean(),
+  organizeExternalRoots: z.boolean(),
 }).strict();
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -74,6 +75,7 @@ export const DEFAULT_SETTINGS: Settings = {
   forceOrganize: false,
   notificationsEnabled: true,
   successNotifications: false,
+  organizeExternalRoots: false,
 };
 
 export interface BookmarkSnapshot {
@@ -122,6 +124,7 @@ export interface BookmarkJob {
   classificationSource?: ClassificationSource;
   scanId?: string;
   duplicateOf?: string;
+  externalRoot?: boolean;
   metadata?: BookmarkMetadata;
 }
 
@@ -213,6 +216,7 @@ export interface PendingOperation extends UndoRecord {
   kind: 'automatic' | 'review' | 'undo';
   reviewId?: string;
   scanId?: string;
+  externalSource?: boolean;
 }
 
 export interface HistoricalBatchUndoRecord {

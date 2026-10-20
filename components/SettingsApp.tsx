@@ -210,6 +210,7 @@ export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
                   <option value="confirm">每次确认后移动</option>
                 </Select>
               </Field>
+              <Switch checked={form.organizeExternalRoots} label="接管书签栏/其他书签的新增书签" title="接管内置根目录" description="开启后，直接保存在书签栏、其他书签或移动设备书签根目录的新书签也会参与分类；只有高置信度自动模式会移入智能书签目录，其余保留原位等待确认。（默认关闭）" onCheckedChange={(checked) => change('organizeExternalRoots', checked)} />
             </div>
           </Disclosure>
         </div>
@@ -231,7 +232,7 @@ export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
           <p>分类只发送当前书签的标题、URL、域名和文件夹清单，不读取网页正文，也不上传整套书签库。</p>
           <p>扩展不申请访问所有网页。点击“授权并测试 AI”时，Chrome 只请求上方 API 地址的来源权限。</p>
           <p>API Key 保存在扩展本地存储中。请使用可撤销、低额度的密钥，避免在共享设备上保存。</p>
-          <p>默认仅整理“智能书签”目录及其子目录中的新增项。</p>
+          <p>默认仅整理“智能书签”目录及其子目录中的新增项；开启“接管内置根目录”后会处理书签栏、其他书签和移动设备书签根目录的新增书签。</p>
         </div>
       </Disclosure>
     </CardContent></Card>
