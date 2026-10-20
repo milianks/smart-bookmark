@@ -223,6 +223,7 @@ export interface PersistedState {
   cache: Record<string, CacheEntry>;
   activities: ActivityRecord[];
   lastUndo?: UndoRecord;
+  undoStack: UndoRecord[];
   pendingOperation?: PendingOperation;
   importStartedAt?: number;
   settingsDraft?: SettingsDraft;
@@ -244,6 +245,7 @@ export interface DashboardState {
   awaitingConfigurationCount: number;
   awaitingPermissionCount: number;
   lastUndo?: UndoRecord;
+  undoStackCount: number;
   aiStatus: 'configured' | 'missing-key' | 'permission-needed';
   historicalScan?: HistoricalScanSummary;
   historicalUndoAvailable: boolean;
@@ -262,6 +264,7 @@ export const emptyPersistedState = (): PersistedState => ({
   reviews: {},
   cache: {},
   activities: [],
+  undoStack: [],
   historicalScan: undefined,
   bookmarkMetadata: {},
 });

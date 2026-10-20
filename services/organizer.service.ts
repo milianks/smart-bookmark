@@ -13,8 +13,10 @@ import type {
   DashboardState,
   FolderSummary,
   PendingOperation,
+  PersistedState,
   ReviewItem,
   Settings,
+  UndoRecord,
 } from '../types/domain';
 import type { NotificationPort } from './notification.service';
 
@@ -245,6 +247,7 @@ export class OrganizerService {
       awaitingConfigurationCount: Object.values(state.jobs).filter((job) => job.status === 'awaiting_configuration').length,
       awaitingPermissionCount: Object.values(state.jobs).filter((job) => job.status === 'awaiting_permission').length,
       ...(state.lastUndo ? { lastUndo: state.lastUndo } : {}),
+      undoStackCount: state.undoStack.length,
       aiStatus: configured ? (permission ? 'configured' : 'permission-needed') : 'missing-key',
       ...(state.historicalScan ? {
         historicalScan: historicalScanSummary(state.historicalScan, Boolean(state.lastHistoricalUndo?.moved.length)),
@@ -422,7 +425,8 @@ export class OrganizerService {
   async undoLastMove(): Promise<string> {
     return this.withMutationLock(async () => {
       const state = await this.deps.store.load();
-      const record = state.lastUndo;
+      const stack = state.undoStack.length > 0 ? state.undoStack : (state.lastUndo ? [state.lastUndo] : []);
+      const record = stack[stack.length - 1];
       if (!record) throw new Error('没有可以撤销的自动归档操作。');
       const rootId = await this.getSmartRootId();
       if (!rootId) throw new Error('智能书签目录不可用，无法撤销。');
@@ -449,7 +453,8 @@ export class OrganizerService {
       if (await this.moveWithRecovery(operation)) return record.title;
       await this.deps.store.update((current) => {
         current.pendingOperation = undefined;
-        current.lastUndo = undefined;
+        current.undoStack = current.undoStack.filter((entry) => entry.operationId !== record.operationId);
+        current.lastUndo = current.undoStack[current.undoStack.length - 1];
         appendActivity(current, {
           kind: 'undone', bookmarkId: record.bookmarkId, title: record.title,
           message: '已撤销最近一次自动归档。',
@@ -697,14 +702,14 @@ export class OrganizerService {
       await this.deps.store.update((current) => {
         current.pendingOperation = undefined;
         current.jobs[job.bookmark.id] && (current.jobs[job.bookmark.id]!.status = 'completed');
-        current.lastUndo = {
+        pushUndoRecord(current, {
           bookmarkId: operation.bookmarkId,
           title: operation.title,
           fromFolderId: operation.fromFolderId,
           toFolderId: operation.toFolderId,
           movedAt: operation.movedAt,
           operationId: operation.operationId,
-        };
+        });
         appendActivity(current, {
           kind: 'moved', bookmarkId: job.bookmark.id, title: job.bookmark.title, url: job.bookmark.url,
           message: `已自动归档到 ${targetPath}。${reason ? ` ${reason}` : ''}`,
@@ -898,14 +903,14 @@ export class OrganizerService {
         }
       } else if (actualParent === pending.toFolderId) {
         if (pending.kind === 'automatic') {
-          state.lastUndo = {
+          pushUndoRecord(state, {
             bookmarkId: pending.bookmarkId,
             title: pending.title,
             fromFolderId: pending.fromFolderId,
             toFolderId: pending.toFolderId,
             movedAt: pending.movedAt,
             operationId: pending.operationId,
-          };
+          });
           appendActivity(state, {
             kind: 'moved', bookmarkId: pending.bookmarkId, title: pending.title,
             message: 'Service Worker 恢复时确认自动归档已完成。',
@@ -932,7 +937,7 @@ export class OrganizerService {
             fromFolderId: pending.fromFolderId, toFolderId: pending.toFolderId,
           }, this.now(), this.makeId);
         } else if (pending.kind === 'undo') {
-          state.lastUndo = undefined;
+          removeUndoRecord(state, pending.bookmarkId, pending.fromFolderId);
           appendActivity(state, {
             kind: 'undone', bookmarkId: pending.bookmarkId, title: pending.title,
             message: 'Service Worker 恢复时确认撤销已完成。',
@@ -952,7 +957,7 @@ export class OrganizerService {
           job.status = 'skipped';
           job.lastError = '恢复时发现书签已位于其他目录，未覆盖当前状态。';
         }
-        if (pending.kind === 'undo') state.lastUndo = undefined;
+        if (pending.kind === 'undo') removeUndoRecord(state, pending.bookmarkId, pending.fromFolderId);
       }
       state.pendingOperation = undefined;
     });
@@ -1005,6 +1010,20 @@ function isHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+const MAX_UNDO_STACK = 10;
+
+function pushUndoRecord(state: PersistedState, record: UndoRecord): void {
+  state.undoStack = [...state.undoStack.filter((entry) => entry.operationId !== record.operationId), record]
+    .slice(-MAX_UNDO_STACK);
+  state.lastUndo = record;
+}
+
+function removeUndoRecord(state: PersistedState, bookmarkId: string, originalToFolderId: string): void {
+  state.undoStack = state.undoStack.filter((entry) =>
+    !(entry.bookmarkId === bookmarkId && entry.toFolderId === originalToFolderId));
+  state.lastUndo = state.undoStack[state.undoStack.length - 1];
 }
 
 function validResultTargets(classified: ClassifiedResult, folders: FolderSummary[]): boolean {

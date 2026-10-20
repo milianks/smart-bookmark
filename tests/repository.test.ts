@@ -115,6 +115,32 @@ describe('ChromeStateRepository', () => {
     expect(loaded.lastHistoricalUndo?.moved).toHaveLength(1);
   });
 
+  it('将旧版 lastUndo 迁移为撤销栈', async () => {
+    const values: Record<string, unknown> = {
+      [STORAGE_KEY]: {
+        version: 1,
+        settings: {
+          enabled: true,
+          baseUrl: 'https://api.example/v1',
+          model: 'm',
+          apiKey: 'k',
+          confidenceThreshold: 0.85,
+          mode: 'automatic',
+          forceOrganize: false,
+          notificationsEnabled: true,
+          successNotifications: false,
+        },
+        lastUndo: { bookmarkId: 'b1', title: 'T', fromFolderId: 'a', toFolderId: 'b', movedAt: 1, operationId: 'op-1' },
+      },
+    };
+    const storage: LocalStorageArea = { get: vi.fn(async (key) => ({ [key]: values[key] })), set: vi.fn(async (items) => Object.assign(values, items)) };
+
+    const loaded = await new ChromeStateRepository(storage).load();
+
+    expect(loaded.undoStack).toHaveLength(1);
+    expect(loaded.undoStack[0]).toMatchObject({ bookmarkId: 'b1', operationId: 'op-1' });
+  });
+
   it('normalizes legacy and malformed bookmark metadata without changing the storage version', async () => {
     const values: Record<string, unknown> = {
       [STORAGE_KEY]: {

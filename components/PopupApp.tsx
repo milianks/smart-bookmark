@@ -210,7 +210,7 @@ export function PopupApp() {
     </CardContent></Card>
 
     <footer className="flex items-center justify-between gap-2">
-      {state.lastUndo ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void undo()}>撤销上次归档</Button> : <span className="text-xs text-slate-500 dark:text-slate-400">暂无可撤销操作</span>}
+      {state.lastUndo ? <Button variant="secondary" size="sm" disabled={busy} onClick={() => void undo()}>撤销上次归档{state.undoStackCount > 1 ? `（还可撤 ${state.undoStackCount - 1} 步）` : ''}</Button> : <span className="text-xs text-slate-500 dark:text-slate-400">暂无可撤销操作</span>}
       <Button variant="ghost" size="sm" onClick={() => setView('settings')}>设置</Button>
     </footer>
   </main>;

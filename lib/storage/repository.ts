@@ -6,6 +6,7 @@ import {
   type HistoricalBatchUndoRecord,
   type HistoricalScanState,
   type PersistedState,
+  type UndoRecord,
 } from '../../types/domain';
 
 const STORAGE_KEY = 'ai-bookmark-manager.state.v1';
@@ -69,6 +70,7 @@ function normalizeState(input: Partial<PersistedState>): PersistedState {
     activities: Array.isArray(input.activities) ? input.activities.slice(-100) : [],
     historicalScan: normalizeHistoricalScan(input.historicalScan),
     lastHistoricalUndo: normalizeHistoricalUndo(input.lastHistoricalUndo),
+    undoStack: normalizeUndoStack(input.undoStack, input.lastUndo),
     bookmarkMetadata: normalizeBookmarkMetadata(input.bookmarkMetadata),
     ...(SettingsDraftSchema.safeParse(input.settingsDraft).success
       ? { settingsDraft: SettingsDraftSchema.parse(input.settingsDraft) }
@@ -114,6 +116,13 @@ function normalizeHistoricalScan(input: unknown): HistoricalScanState | undefine
     forceOrganize: value.forceOrganize === true,
     ...(typeof value.lastError === 'string' ? { lastError: value.lastError.slice(0, 500) } : {}),
   };
+}
+
+function normalizeUndoStack(stack: unknown, lastUndo: unknown): UndoRecord[] {
+  const source = Array.isArray(stack) && stack.length > 0 ? stack
+    : lastUndo && typeof lastUndo === 'object' ? [lastUndo as UndoRecord]
+    : [];
+  return source.slice(-10);
 }
 
 function normalizeHistoricalUndo(input: unknown): HistoricalBatchUndoRecord | undefined {

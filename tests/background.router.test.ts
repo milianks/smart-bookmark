@@ -29,6 +29,7 @@ const dashboard: DashboardState = {
   activities: [],
   awaitingConfigurationCount: 0,
   awaitingPermissionCount: 0,
+  undoStackCount: 0,
   aiStatus: 'configured',
   historicalUndoAvailable: false,
 };

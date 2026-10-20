@@ -152,6 +152,52 @@ describe('OrganizerService', () => {
     expect((await store.load()).lastUndo).toMatchObject({ bookmarkId: 'b1', fromFolderId: 'smart-root', toFolderId: 'dev' });
   });
 
+  it('撤销栈保留多次自动移动并可逐条回退', async () => {
+    const ids = { n: 0 };
+    const multi = new OrganizerService({
+      bookmarks, store, classifier, notifications, alarms: { schedule: vi.fn() },
+      hasProviderPermission: async () => true,
+      makeId: (prefix) => `${prefix}-${ids.n++}`,
+    });
+    bookmarks.addBookmark('b2', 'React docs', 'https://example.com/react', 'smart-root');
+    await multi.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
+    await multi.onBookmarkCreated('b2', bookmarks.nodes.get('b2')!);
+
+    let state = await store.load();
+    expect(state.undoStack).toHaveLength(2);
+    expect(state.lastUndo).toMatchObject({ bookmarkId: 'b2' });
+
+    await multi.undoLastMove();
+    await multi.undoLastMove();
+
+    state = await store.load();
+    expect(state.undoStack).toHaveLength(0);
+    expect(state.lastUndo).toBeUndefined();
+    expect(bookmarks.moves).toEqual([
+      { id: 'b1', target: 'dev' }, { id: 'b2', target: 'dev' },
+      { id: 'b2', target: 'smart-root' }, { id: 'b1', target: 'smart-root' },
+    ]);
+    await expect(multi.undoLastMove()).rejects.toThrow('没有可以撤销');
+  });
+
+  it('撤销栈最多保留 10 条自动移动', async () => {
+    const ids = { n: 0 };
+    const multi = new OrganizerService({
+      bookmarks, store, classifier, notifications, alarms: { schedule: vi.fn() },
+      hasProviderPermission: async () => true,
+      makeId: (prefix) => `${prefix}-${ids.n++}`,
+    });
+    for (let index = 0; index < 12; index += 1) {
+      const id = `stack-${index}`;
+      bookmarks.addBookmark(id, `Article ${index}`, `https://example.com/a${index}`, 'smart-root');
+      await multi.onBookmarkCreated(id, bookmarks.nodes.get(id)!);
+    }
+
+    const state = await store.load();
+    expect(state.undoStack).toHaveLength(10);
+    expect(state.undoStack[0]).toMatchObject({ bookmarkId: 'stack-2' });
+  });
+
   it('没有合适目录时生成新目录建议，用户确认后才创建并移动', async () => {
     result = { action: 'suggest_folder', suggestedFolder: { name: 'Agent', parentId: 'dev' }, confidence: 0.79, reason: '主题目前没有合适目录' };
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
