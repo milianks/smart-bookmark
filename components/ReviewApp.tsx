@@ -54,6 +54,16 @@ export function ReviewApp() {
   }, [state, scanId]);
   const active = items.find((item) => item.id === selected) ?? items[0];
   useEffect(() => { setOverrideFolder(''); }, [active?.id]);
+  const groups = useMemo(() => {
+    const map = new Map<string, ReviewItem[]>();
+    for (const item of items) {
+      const key = groupKeyOf(item);
+      const group = map.get(key);
+      if (group) group.push(item);
+      else map.set(key, [item]);
+    }
+    return [...map.entries()].sort((a, b) => b[1].length - a[1].length);
+  }, [items]);
   const pendingCount = items.filter((item) => item.status === 'pending').length;
   const canApproveAll = items.some((item) => item.scanId && item.status === 'pending');
 
@@ -109,6 +119,24 @@ export function ReviewApp() {
     finally { setMetadataBusyId(''); }
   }
 
+  async function approveGroup(group: ReviewItem[]) {
+    setBatchBusy(true);
+    setError('');
+    let approved = 0;
+    for (const item of group) {
+      if (item.status !== 'pending') continue;
+      try {
+        unwrapResponse(await sendMessage({ type: 'review:approve', id: item.id }));
+        approved += 1;
+      } catch {
+        // Stale or independently failed items do not block the group.
+      }
+    }
+    setBatchBusy(false);
+    setNotice(`本组已批准 ${approved} 条建议。`);
+    await refresh().catch(() => undefined);
+  }
+
   return <main className="mx-auto w-full max-w-5xl space-y-4 px-5 py-7 sm:px-8 lg:px-10" aria-busy={!state}>
     <header>
       <a href={chrome.runtime.getURL('/popup.html')} className="inline-flex rounded text-xs font-medium text-violet-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 dark:text-violet-300 dark:focus-visible:ring-offset-slate-950">← 返回书签管理</a>
@@ -144,25 +172,31 @@ export function ReviewApp() {
           <Badge>{items.length}</Badge>
         </CardHeader>
         <div className="flex gap-2 overflow-x-auto p-2 lg:block">
-          {items.map((item) => <button
-            key={item.id}
-            type="button"
-            aria-current={active?.id === item.id ? 'true' : undefined}
-            onClick={() => setSelected(item.id)}
-            className={cn(
-              'mb-1 w-56 shrink-0 rounded-xl border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white lg:w-full dark:focus-visible:ring-offset-slate-950',
-              active?.id === item.id
-                ? 'border-violet-200 bg-violet-50 dark:border-violet-800 dark:bg-violet-950/50'
-                : 'border-transparent hover:bg-slate-50 dark:hover:bg-slate-800',
-            )}
-          >
-            <span className="block truncate text-sm font-medium">{item.title}</span>
-            <span className="mt-1 block truncate text-xs text-slate-500 dark:text-slate-400">{safeHostname(item.url)}</span>
-            <span className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
-              <span aria-hidden="true" className={cn('size-1.5 rounded-full', statusDot[item.status])} />
-              {reviewStatusLabel(item.status)}
-            </span>
-          </button>)}
+          {groups.map(([label, group]) => <div key={label} className="mb-2 w-56 shrink-0 lg:w-full">
+            <div className="flex items-center justify-between gap-2 px-1 pb-1">
+              <span className="min-w-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400" title={label}>{label} · {group.length}</span>
+              {group.length > 1 && group.some((item) => item.status === 'pending') && <button type="button" disabled={batchBusy} onClick={() => void approveGroup(group)} className="shrink-0 rounded text-[11px] font-semibold text-violet-700 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 disabled:opacity-50 dark:text-violet-300">批准本组</button>}
+            </div>
+            {group.map((item) => <button
+              key={item.id}
+              type="button"
+              aria-current={active?.id === item.id ? 'true' : undefined}
+              onClick={() => setSelected(item.id)}
+              className={cn(
+                'mb-1 w-full rounded-xl border p-3 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-slate-950',
+                active?.id === item.id
+                  ? 'border-violet-200 bg-violet-50 dark:border-violet-800 dark:bg-violet-950/50'
+                  : 'border-transparent hover:bg-slate-50 dark:hover:bg-slate-800',
+              )}
+            >
+              <span className="block truncate text-sm font-medium">{item.title}</span>
+              <span className="mt-1 block truncate text-xs text-slate-500 dark:text-slate-400">{safeHostname(item.url)}</span>
+              <span className="mt-2 flex items-center gap-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                <span aria-hidden="true" className={cn('size-1.5 rounded-full', statusDot[item.status])} />
+                {reviewStatusLabel(item.status)}
+              </span>
+            </button>)}
+          </div>)}
         </div>
       </Card>
       {active && <ReviewDetail item={active} metadata={active.metadata} busy={busyId === active.id} metadataBusy={metadataBusyId === active.bookmarkId} folders={state.folders} overrideFolder={overrideFolder} onOverrideChange={setOverrideFolder} onGenerateMetadata={() => void generateMetadata(active.bookmarkId)} onApprove={() => void decide(active, 'approve')} onReject={() => void decide(active, 'reject')} />}
@@ -255,6 +289,16 @@ function ReviewDetail({ item, metadata, busy, metadataBusy, folders, overrideFol
 
 function reviewStatusLabel(status: ReviewItem['status']): string {
   return { pending: '待确认', approving: '处理中', approved: '已批准', rejected: '已拒绝', stale: '已过期' }[status];
+}
+
+function groupKeyOf(item: ReviewItem): string {
+  if (item.classification.action === 'move') {
+    return item.targetFolderPath ?? `文件夹 ${item.classification.targetFolderId}`;
+  }
+  if (item.classification.action === 'suggest_folder') {
+    return `新建：${item.classification.suggestedFolder.name}${item.parentFolderPath ? `（位于 ${item.parentFolderPath}）` : ''}`;
+  }
+  return '保留原位';
 }
 
 function safeHostname(value: string): string {
