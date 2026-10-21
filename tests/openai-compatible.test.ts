@@ -433,13 +433,65 @@ describe('OpenAICompatibleProvider', () => {
 
     await expect(provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' })).resolves.toMatchObject(result);
 
-    expect(fetcher).toHaveBeenCalledTimes(2);
-    const fallbackBody = JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body)) as {
+    // 先试“工具 + 关闭思考”，再试“工具”，最后才降级为纯文本。
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const toolsOnlyBody = JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body)) as { tools?: unknown; reasoning_effort?: string };
+    expect(toolsOnlyBody.tools).toBeDefined();
+    expect(toolsOnlyBody.reasoning_effort).toBeUndefined();
+
+    const fallbackBody = JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body)) as {
       tools?: unknown;
       messages: Array<{ role: string; content: string }>;
     };
     expect(fallbackBody.tools).toBeUndefined();
     expect(fallbackBody.messages[1]?.content).toContain('书签分类器');
+  });
+
+  it('分类请求默认关闭思维链', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }],
+    }), { status: 200 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    await provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' });
+
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({ reasoning_effort: 'none' });
+  });
+
+  it('网关不接受关闭思维链参数时保留工具调用并记住该限制', async () => {
+    const fetcher = vi.fn<typeof fetch>(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { reasoning_effort?: string };
+      if (body.reasoning_effort) return new Response(JSON.stringify({ error: 'unknown field reasoning_effort' }), { status: 400 });
+      return new Response(JSON.stringify({
+        choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: '', tool_calls: [{
+          id: 'call_1', type: 'function', function: { name: 'submit_classification', arguments: JSON.stringify(result) },
+        }] } }],
+      }), { status: 200 });
+    });
+    const provider = new OpenAICompatibleProvider(fetcher as typeof fetch);
+    const config = { ...baseConfig, protocol: 'openai-chat-completions' as const };
+
+    await expect(provider.classify(input, [], config)).resolves.toMatchObject(result);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+
+    await expect(provider.classify(input, [], config)).resolves.toMatchObject(result);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body))).not.toHaveProperty('reasoning_effort');
+  });
+
+  it('工具描述承载“不读正文、必须调用工具”约束，避免网关丢弃 system 时模型反问', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }],
+    }), { status: 200 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    await provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' });
+
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)) as {
+      tools: Array<{ function: { description: string } }>;
+    };
+    expect(body.tools[0]?.function.description).toContain('不要声称读取网页正文');
+    expect(body.tools[0]?.function.description).toContain('必须调用本工具');
   });
 
   it('网关静默忽略 tools 并返回散文时，降级到文本模式并复用同一个 Provider 能力判断', async () => {
