@@ -3,6 +3,7 @@ import type { DashboardState } from '../types/domain';
 import { sendMessage, unwrapResponse } from '../types/messages';
 import { BookmarkCard } from './BookmarkCard';
 import { RecentActivity, activityLabels } from './RecentActivity';
+import { ReviewApp } from './ReviewApp';
 import { SettingsApp } from './SettingsApp';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -15,7 +16,8 @@ import { Switch } from './ui/switch';
 
 export function PopupApp() {
   const [state, setState] = useState<DashboardState | null>(null);
-  const [view, setView] = useState<'main' | 'settings'>('main');
+  const [view, setView] = useState<'main' | 'settings' | 'review'>('main');
+  const [reviewScanId, setReviewScanId] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
@@ -93,6 +95,7 @@ export function PopupApp() {
   }
 
   if (view === 'settings') return <SettingsApp embedded onBack={() => { setView('main'); void refresh(); }} />;
+  if (view === 'review') return <ReviewApp embedded scanId={reviewScanId} onBack={() => { setView('main'); void refresh(); }} />;
 
   if (!state) return <main className="w-[390px] space-y-4 p-4">
     {error ? <Notice tone="error">{error}</Notice> : <>
@@ -117,7 +120,6 @@ export function PopupApp() {
   const scan = state.historicalScan;
   const scanActive = scan?.status === 'scanning' || scan?.status === 'awaiting_review';
   const latestActivity = state.activities[0];
-  const reviewUrl = chrome.runtime.getURL('/review.html');
 
   return <main className="w-[390px] space-y-4 p-4">
     <header className="flex items-center justify-between gap-3">
@@ -141,7 +143,7 @@ export function PopupApp() {
         label="待确认"
         value={pendingCount}
         hint={pendingCount > 0 ? '查看建议' : '暂无待办'}
-        href={pendingCount > 0 ? reviewUrl : undefined}
+        onClick={pendingCount > 0 ? () => { setReviewScanId(''); setView('review'); } : undefined}
         tone={pendingCount > 0 ? 'primary' : 'neutral'}
       />
       <Stat
@@ -184,7 +186,7 @@ export function PopupApp() {
             <p>待确认 {scan.pendingReviewCount} · 失败 {scan.failedCount} · 跳过 {scan.skippedCount}</p>
             {scan.lastError && <p className="text-rose-600 dark:text-rose-400">{scan.lastError}</p>}
             <div className="flex flex-wrap gap-3 pt-1">
-              {scan.pendingReviewCount > 0 && <a className="font-semibold text-violet-700 underline underline-offset-4 dark:text-violet-300" href={chrome.runtime.getURL(`/review.html?scan=${encodeURIComponent(scan.id)}`)}>查看历史建议 →</a>}
+              {scan.pendingReviewCount > 0 && <button type="button" onClick={() => { setReviewScanId(scan.id); setView('review'); }} className="rounded font-semibold text-violet-700 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-violet-300">查看历史建议 →</button>}
               {state.historicalUndoAvailable && <button type="button" disabled={scanBusy} onClick={() => void undoHistorical()} className="rounded font-semibold text-slate-700 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 disabled:opacity-50 dark:text-slate-300">撤销最近批量整理</button>}
             </div>
           </div>}

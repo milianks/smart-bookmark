@@ -8,6 +8,7 @@ interface StatProps {
   value: ReactNode;
   hint?: ReactNode;
   href?: string;
+  onClick?: () => void;
   tone?: StatTone;
   className?: string;
 }
@@ -19,10 +20,12 @@ const valueTones: Record<StatTone, string> = {
   success: 'text-emerald-700 dark:text-emerald-300',
 };
 
-export function Stat({ label, value, hint, href, tone = 'neutral', className }: StatProps) {
+export function Stat({ label, value, hint, href, onClick, tone = 'neutral', className }: StatProps) {
+  const interactive = Boolean(href || onClick);
   const classes = cn(
     'flex min-w-0 flex-col gap-1 rounded-xl border border-slate-100 bg-slate-50/80 px-2.5 py-2 transition-colors dark:border-slate-800 dark:bg-slate-950/50',
-    href && 'hover:border-violet-200 hover:bg-violet-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:border-violet-800 dark:hover:bg-violet-950/40 dark:focus-visible:ring-offset-slate-950',
+    interactive && 'hover:border-violet-200 hover:bg-violet-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:hover:border-violet-800 dark:hover:bg-violet-950/40 dark:focus-visible:ring-offset-slate-950',
+    onClick && 'text-left',
     className,
   );
   const content = <>
@@ -30,5 +33,6 @@ export function Stat({ label, value, hint, href, tone = 'neutral', className }: 
     <span className={cn('truncate text-sm font-semibold', valueTones[tone])}>{value}</span>
     {hint && <span className="truncate text-[11px] leading-4 text-slate-500 dark:text-slate-400">{hint}</span>}
   </>;
+  if (onClick) return <button type="button" onClick={onClick} className={classes}>{content}</button>;
   return href ? <a href={href} className={classes}>{content}</a> : <div className={classes}>{content}</div>;
 }
