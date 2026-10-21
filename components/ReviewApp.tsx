@@ -137,7 +137,7 @@ export function ReviewApp() {
     await refresh().catch(() => undefined);
   }
 
-  return <main className="mx-auto w-full max-w-5xl space-y-4 px-5 py-7 sm:px-8 lg:px-10" aria-busy={!state}>
+  return <main className="mx-auto w-full max-w-3xl space-y-4 px-5 py-7 sm:px-8 lg:px-10" aria-busy={!state}>
     <header>
       <a href={chrome.runtime.getURL('/popup.html')} className="inline-flex rounded text-xs font-medium text-violet-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 dark:text-violet-300 dark:focus-visible:ring-offset-slate-950">← 返回书签管理</a>
       <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
