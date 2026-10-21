@@ -177,8 +177,8 @@ export function ReviewApp({ embedded = false, scanId: initialScanId, onBack }: {
           <h2 className={cn('font-semibold', embedded ? 'text-sm' : 'text-base')}>建议列表</h2>
           <Badge>{items.length}</Badge>
         </CardHeader>
-        <div className="flex gap-2 overflow-x-auto p-2 lg:block">
-          {groups.map(([label, group]) => <div key={label} className="mb-2 w-56 shrink-0 lg:w-full">
+        <div className={embedded ? 'space-y-2 p-2' : 'flex gap-2 overflow-x-auto p-2 lg:block'}>
+          {groups.map(([label, group]) => <div key={label} className={cn('mb-2', embedded ? 'w-full' : 'w-56 shrink-0 lg:w-full')}>
             <div className="flex items-center justify-between gap-2 px-1 pb-1">
               <span className="min-w-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400" title={label}>{label} · {group.length}</span>
               {group.length > 1 && group.some((item) => item.status === 'pending') && <button type="button" disabled={batchBusy} onClick={() => void approveGroup(group)} className="shrink-0 rounded text-[11px] font-semibold text-violet-700 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 disabled:opacity-50 dark:text-violet-300">批准本组</button>}
@@ -232,7 +232,7 @@ function ReviewDetail({ compact, item, metadata, busy, metadataBusy, folders, ov
   const confidence = Math.round(item.classification.confidence * 100);
 
   return <Card className="min-w-0">
-    <CardHeader className={cn('flex flex-wrap items-start justify-between', compact ? 'gap-3' : 'gap-4')}>
+    <CardHeader className={cn('flex flex-wrap justify-between', compact ? 'flex-col items-stretch gap-2' : 'items-start gap-4')}>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone="primary">{sourceLabel}</Badge>
@@ -242,7 +242,7 @@ function ReviewDetail({ compact, item, metadata, busy, metadataBusy, folders, ov
         <h2 className={cn('mt-2 break-words font-semibold', compact ? 'text-base' : 'text-lg')}>{item.title}</h2>
         <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">{safeHostname(item.url)}</p>
       </div>
-      <div className="min-w-[7rem] shrink-0">
+      <div className={compact ? 'w-full' : 'min-w-[7rem] shrink-0'}>
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-xs text-slate-500 dark:text-slate-400">置信度</span>
           <span className="text-sm font-semibold">{confidence}%</span>
