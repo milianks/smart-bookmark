@@ -8,7 +8,7 @@ const MAX_CLASSIFICATION_TEXT_LENGTH = 16_000;
 const REQUEST_TIMEOUT_MS = 22_000;
 
 export class ProviderError extends Error {
-  constructor(message: string, readonly retryable = false) {
+  constructor(message: string, readonly retryable = false, readonly status?: number) {
     super(message);
     this.name = 'ProviderError';
   }
@@ -17,6 +17,83 @@ export class ProviderError extends Error {
 const BatchResultSchema = z.object({
   results: z.array(ClassificationResultSchema.and(z.object({ index: z.number().int().min(0) }))),
 });
+
+/**
+ * 结构化输出的第一层：把结果形状写进工具的 JSON Schema。
+ * 网关即使丢弃 system 消息或忽略 response_format，也必须按工具参数回填。
+ */
+interface ToolSpec {
+  name: string;
+  description: string;
+  schema: Record<string, unknown>;
+  strict?: boolean;
+}
+
+const classificationProperties = {
+  action: { type: 'string', enum: ['move', 'suggest_folder', 'keep'] },
+  targetFolderId: { type: 'string', minLength: 1 },
+  suggestedFolder: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['name', 'parentId'],
+    properties: {
+      name: { type: 'string', minLength: 1, maxLength: 64 },
+      parentId: { type: 'string', minLength: 1 },
+    },
+  },
+  confidence: { type: 'number', minimum: 0, maximum: 1 },
+  reason: { type: 'string', minLength: 1, maxLength: 500 },
+} as const;
+
+const CLASSIFICATION_TOOL: ToolSpec = {
+  name: 'submit_classification',
+  description: '提交一个书签的分类建议。action=move 时给 targetFolderId；action=suggest_folder 时给 suggestedFolder；action=keep 时不移动。',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['action', 'confidence', 'reason'],
+    properties: classificationProperties,
+  },
+};
+
+const BATCH_TOOL: ToolSpec = {
+  name: 'submit_classifications',
+  description: '提交整批书签的分类建议，每一条书签恰好一个结果，index 与输入一致。',
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['results'],
+    properties: {
+      results: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['index', 'action', 'confidence', 'reason'],
+          properties: {
+            index: { type: 'integer', minimum: 0 },
+            ...classificationProperties,
+          },
+        },
+      },
+    },
+  },
+};
+
+const METADATA_TOOL: ToolSpec = {
+  name: 'submit_metadata',
+  description: '提交书签摘要与标签。摘要不超过500字，标签最多8个且每个不超过32字。',
+  strict: true,
+  schema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['summary', 'tags'],
+    properties: {
+      summary: { type: 'string', minLength: 1, maxLength: 500 },
+      tags: { type: 'array', minItems: 1, maxItems: 8, items: { type: 'string', minLength: 1, maxLength: 32 } },
+    },
+  },
+};
 
 export interface ClassifierProvider {
   classify(input: ClassificationInput, folders: FolderSummary[], config: ProviderConfig, recentCorrections?: RecentCorrection[]): Promise<ClassificationResult>;
@@ -39,9 +116,7 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     recentCorrections?: RecentCorrection[],
   ): Promise<ClassificationResult> {
     const messages = buildClassificationMessages(input, folders, recentCorrections);
-    const payload = await this.request(config, buildRequestBody(config, messages));
-    const content = extractClassificationText(payload, config.protocol);
-    const parsed = parseJsonContent(content);
+    const parsed = await this.askStructured(config, messages, CLASSIFICATION_TOOL);
     const result = ClassificationResultSchema.safeParse(parsed);
     if (!result.success) throw new ProviderError('AI 分类结果不符合安全格式，书签已保留原位', false);
     return result.data;
@@ -55,9 +130,7 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
   ): Promise<ClassificationResult[]> {
     if (inputs.length === 0) return [];
     const messages = buildBatchMessages(inputs, folders, recentCorrections);
-    const payload = await this.request(config, buildRequestBody(config, messages, 4_000));
-    const content = extractClassificationText(payload, config.protocol);
-    const parsed = parseJsonContent(content);
+    const parsed = await this.askStructured(config, messages, BATCH_TOOL, 4_000);
     const batch = BatchResultSchema.safeParse(parsed);
     if (!batch.success) throw new ProviderError('AI 批量结果不符合安全格式', false);
     const byIndex = new Map<number, ClassificationResult>();
@@ -72,8 +145,7 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
   }
 
   async generateMetadata(input: BookmarkMetadataInput, config: ProviderConfig): Promise<SummaryTagResult> {
-    const payload = await this.request(config, buildRequestBody(config, buildMetadataMessages(input)));
-    const parsed = parseJsonContent(extractClassificationText(payload, config.protocol));
+    const parsed = await this.askStructured(config, buildMetadataMessages(input), METADATA_TOOL);
     const result = SummaryTagResultSchema.safeParse(parsed);
     if (!result.success) throw new ProviderError('AI 摘要标签结果不符合安全格式', false);
     return result.data;
@@ -101,6 +173,43 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     if (!referencesSyntheticFolder) {
       throw new ProviderError('AI 测试结果引用了无效的示例文件夹', false);
     }
+  }
+
+  /** 记录“这个网关不支持工具调用”的判断，配置变化时自动失效。 */
+  private promptModeOnlyFor?: string;
+
+  /**
+   * 结构化输出：优先用工具调用强制形状，网关不支持或静默忽略时降级为
+   * “指令并入 user 消息”的纯文本模式（兼容丢弃 system 的网关）。
+   */
+  private async askStructured(
+    config: ProviderConfig,
+    messages: ClassificationMessage[],
+    tool: ToolSpec,
+    maxTokens?: number,
+  ): Promise<unknown> {
+    const shape = `${config.protocol}:${config.baseUrl}:${config.model}`;
+    if (this.promptModeOnlyFor !== shape) {
+      try {
+        const payload = await this.request(config, buildRequestBody(config, messages, maxTokens, tool));
+        assertNotTruncated(payload, config.protocol);
+        const structured = extractToolPayload(payload, config.protocol);
+        if (structured !== undefined) return structured;
+        const text = readContentText(payload, config.protocol);
+        const parsed = text === undefined ? undefined : tryParseJson(text);
+        if (parsed !== undefined) return parsed;
+        this.promptModeOnlyFor = shape;
+      } catch (error) {
+        if (!(error instanceof ProviderError)) throw error;
+        const status = error.status;
+        // 400/422 才可能是“不支持 tools 参数”；404 通常是地址或模型不对，不应降级重试。
+        if (status !== 400 && status !== 422) throw error;
+        this.promptModeOnlyFor = shape;
+      }
+    }
+    const payload = await this.request(config, buildRequestBody(config, inlineInstructions(messages), maxTokens));
+    assertNotTruncated(payload, config.protocol);
+    return parseJsonContent(extractClassificationText(payload, config.protocol));
   }
 
   private async request(config: ProviderConfig, body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -132,7 +241,7 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
             : providerError?.code === 'model_not_found'
               ? '当前模型不存在，请检查模型名称并选择服务支持的模型'
               : `AI 服务返回错误 (${response.status})`;
-        throw new ProviderError(statusText, retryable);
+        throw new ProviderError(statusText, retryable, response.status);
       }
       let json: unknown;
       try {
@@ -198,7 +307,12 @@ function validateMigrationBaseUrl(rawBaseUrl?: string): string | undefined {
 
 type ClassificationMessage = { role: 'system' | 'user'; content: string };
 
-function buildRequestBody(config: ProviderConfig, messages: ClassificationMessage[], maxTokens = 500): Record<string, unknown> {
+function buildRequestBody(
+  config: ProviderConfig,
+  messages: ClassificationMessage[],
+  maxTokens = 500,
+  tool?: ToolSpec,
+): Record<string, unknown> {
   if (config.protocol === 'anthropic-messages') {
     return {
       model: config.model,
@@ -206,6 +320,10 @@ function buildRequestBody(config: ProviderConfig, messages: ClassificationMessag
       temperature: 0.1,
       system: messages[0]?.content ?? '',
       messages: [{ role: 'user', content: messages[1]?.content ?? '' }],
+      ...(tool ? {
+        tools: [{ name: tool.name, description: tool.description, input_schema: tool.schema }],
+        tool_choice: { type: 'tool', name: tool.name },
+      } : {}),
     };
   }
   if (config.protocol === 'openai-responses') {
@@ -215,6 +333,10 @@ function buildRequestBody(config: ProviderConfig, messages: ClassificationMessag
       input: messages[1]?.content ?? '',
       max_output_tokens: maxTokens,
       temperature: 0.1,
+      ...(tool ? {
+        tools: [{ type: 'function', name: tool.name, description: tool.description, parameters: tool.schema, strict: tool.strict === true }],
+        tool_choice: { type: 'function', name: tool.name },
+      } : {}),
     };
   }
   return {
@@ -222,6 +344,10 @@ function buildRequestBody(config: ProviderConfig, messages: ClassificationMessag
     messages,
     temperature: 0.1,
     max_tokens: maxTokens,
+    ...(tool ? {
+      tools: [{ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.schema, strict: tool.strict === true } }],
+      tool_choice: { type: 'function', function: { name: tool.name } },
+    } : {}),
   };
 }
 
@@ -237,7 +363,7 @@ function requestHeaders(config: ProviderConfig): Record<string, string> {
   return { ...common, Authorization: `Bearer ${config.apiKey}` };
 }
 
-function extractClassificationText(payload: Record<string, unknown>, protocol: ProviderConfig['protocol']): string {
+function readContentText(payload: Record<string, unknown>, protocol: ProviderConfig['protocol']): string | undefined {
   let content: unknown;
   if (protocol === 'anthropic-messages') {
     content = textFromBlocks(payload.content, 'text');
@@ -255,10 +381,89 @@ function extractClassificationText(payload: Record<string, unknown>, protocol: P
     if (Array.isArray(content)) content = textFromBlocks(content, 'text');
   }
 
-  if (typeof content !== 'string' || content.length > MAX_CLASSIFICATION_TEXT_LENGTH) {
-    throw new ProviderError('AI 没有返回可读取的分类内容', false);
-  }
+  if (typeof content !== 'string' || content.length > MAX_CLASSIFICATION_TEXT_LENGTH) return undefined;
   return content;
+}
+
+function extractClassificationText(payload: Record<string, unknown>, protocol: ProviderConfig['protocol']): string {
+  const content = readContentText(payload, protocol);
+  if (content === undefined) throw new ProviderError('AI 没有返回可读取的分类内容', false);
+  return content;
+}
+
+/** 取出工具调用的参数（已经是对象或可解析的 JSON 字符串），没有则返回 undefined。 */
+function extractToolPayload(payload: Record<string, unknown>, protocol: ProviderConfig['protocol']): unknown {
+  if (protocol === 'anthropic-messages') {
+    const blocks = payload.content;
+    if (!Array.isArray(blocks)) return undefined;
+    for (const block of blocks) {
+      if (!block || typeof block !== 'object') continue;
+      const record = block as Record<string, unknown>;
+      if (record.type === 'tool_use') return record.input;
+    }
+    return undefined;
+  }
+  if (protocol === 'openai-responses') {
+    const output = payload.output;
+    if (!Array.isArray(output)) return undefined;
+    for (const item of output) {
+      if (!item || typeof item !== 'object') continue;
+      const record = item as Record<string, unknown>;
+      if (record.type === 'function_call' && typeof record.arguments === 'string') return tryParseJson(record.arguments);
+    }
+    return undefined;
+  }
+  const choices = payload.choices;
+  const firstChoice = Array.isArray(choices) ? choices[0] : undefined;
+  const message = firstChoice && typeof firstChoice === 'object' ? firstChoice.message : undefined;
+  const calls = typeof message === 'object' && message !== null
+    ? (message as Record<string, unknown>).tool_calls
+    : undefined;
+  if (!Array.isArray(calls)) return undefined;
+  for (const call of calls) {
+    if (!call || typeof call !== 'object') continue;
+    const fn = (call as Record<string, unknown>).function;
+    const args = typeof fn === 'object' && fn !== null ? (fn as Record<string, unknown>).arguments : undefined;
+    if (typeof args === 'string') return tryParseJson(args);
+  }
+  return undefined;
+}
+
+/** 被 max_tokens 截断时给出可重试的独立错误，避免和“不是合法 JSON”混为一谈。 */
+function assertNotTruncated(payload: Record<string, unknown>, protocol: ProviderConfig['protocol']): void {
+  const truncated = (reason: unknown) => reason === 'length' || reason === 'max_tokens' || reason === 'max_output_tokens';
+  if (protocol === 'anthropic-messages') {
+    if (truncated(payload.stop_reason)) throw new ProviderError('AI 响应被截断，请重试或减少书签数量', true);
+    return;
+  }
+  if (protocol === 'openai-responses') {
+    const details = payload.incomplete_details;
+    const reason = typeof details === 'object' && details !== null
+      ? (details as Record<string, unknown>).reason
+      : undefined;
+    if (payload.status === 'incomplete' && truncated(reason)) throw new ProviderError('AI 响应被截断，请重试或减少书签数量', true);
+    return;
+  }
+  const choices = payload.choices;
+  const firstChoice = Array.isArray(choices) ? choices[0] : undefined;
+  const reason = firstChoice && typeof firstChoice === 'object'
+    ? (firstChoice as Record<string, unknown>).finish_reason
+    : undefined;
+  if (truncated(reason)) throw new ProviderError('AI 响应被截断，请重试或减少书签数量', true);
+}
+
+/**
+ * 纯文本降级：把 system 内容并入 user 消息尾部。
+ * 指令放在数据之后，且不再依赖会被部分网关丢弃的 system 角色。
+ */
+function inlineInstructions(messages: ClassificationMessage[]): ClassificationMessage[] {
+  const system = messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n\n');
+  const user = messages.filter((message) => message.role === 'user').map((message) => message.content).join('\n\n');
+  if (!system) return messages;
+  return [
+    { role: 'system', content: system },
+    { role: 'user', content: `${user}\n\n---\n${system}` },
+  ];
 }
 
 function responseOutputText(output: unknown): string | undefined {
@@ -285,13 +490,19 @@ function textFromBlocks(value: unknown, acceptedType: string): string | undefine
   return parts.length ? parts.join('') : undefined;
 }
 
-function parseJsonContent(content: string): unknown {
+function tryParseJson(content: string): unknown {
   const clean = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   try {
     return JSON.parse(clean) as unknown;
   } catch {
-    throw new ProviderError('AI 分类内容不是有效 JSON，书签已保留原位', false);
+    return undefined;
   }
+}
+
+function parseJsonContent(content: string): unknown {
+  const parsed = tryParseJson(content);
+  if (parsed === undefined) throw new ProviderError('AI 分类内容不是有效 JSON，书签已保留原位', false);
+  return parsed;
 }
 
 async function readLimitedText(response: Response, limit: number): Promise<string> {
