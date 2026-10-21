@@ -47,7 +47,7 @@ const classificationProperties = {
 
 const CLASSIFICATION_TOOL: ToolSpec = {
   name: 'submit_classification',
-  description: '提交一个书签的分类建议。action=move 时给 targetFolderId；action=suggest_folder 时给 suggestedFolder；action=keep 时不移动。',
+  description: '提交一个书签的分类建议。只能基于标题、URL、域名、当前文件夹和样例判断，不要声称读取网页正文，也不要向用户反问或索要内容。必须调用本工具返回结果，不要用自然语言回答。只能引用输入清单中真实存在的文件夹 ID。action=move 时给 targetFolderId；action=suggest_folder 时给 suggestedFolder；action=keep 时不移动。',
   schema: {
     type: 'object',
     additionalProperties: false,
@@ -58,7 +58,7 @@ const CLASSIFICATION_TOOL: ToolSpec = {
 
 const BATCH_TOOL: ToolSpec = {
   name: 'submit_classifications',
-  description: '提交整批书签的分类建议，每一条书签恰好一个结果，index 与输入一致。',
+  description: '提交整批书签的分类建议。只能基于标题、URL、域名、当前文件夹和样例判断，不要声称读取网页正文，也不要向用户反问或索要内容。必须调用本工具返回结果，不要用自然语言回答。只能引用输入清单中真实存在的文件夹 ID。每一条书签恰好一个结果，index 与输入一致。',
   schema: {
     type: 'object',
     additionalProperties: false,
@@ -82,7 +82,7 @@ const BATCH_TOOL: ToolSpec = {
 
 const METADATA_TOOL: ToolSpec = {
   name: 'submit_metadata',
-  description: '提交书签摘要与标签。摘要不超过500字，标签最多8个且每个不超过32字。',
+  description: '提交书签摘要与标签。只能基于标题、URL、域名和当前文件夹推断，不要声称读取网页正文，也不要访问链接，更不要向用户反问或索要内容。必须调用本工具返回结果，不要用自然语言回答。摘要不超过500字，标签最多8个且每个不超过32字。',
   strict: true,
   schema: {
     type: 'object',
@@ -178,6 +178,9 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
   /** 记录“这个网关不支持工具调用”的判断，配置变化时自动失效。 */
   private promptModeOnlyFor?: string;
 
+  /** 记录“这个网关不接受 reasoning_effort”，配置变化时自动失效。 */
+  private reasoningOptOutFailedFor?: string;
+
   /**
    * 结构化输出：优先用工具调用强制形状，网关不支持或静默忽略时降级为
    * “指令并入 user 消息”的纯文本模式（兼容丢弃 system 的网关）。
@@ -190,24 +193,40 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
   ): Promise<unknown> {
     const shape = `${config.protocol}:${config.baseUrl}:${config.model}`;
     if (this.promptModeOnlyFor !== shape) {
-      try {
-        const payload = await this.request(config, buildRequestBody(config, messages, maxTokens, tool));
-        assertNotTruncated(payload, config.protocol);
-        const structured = extractToolPayload(payload, config.protocol);
-        if (structured !== undefined) return structured;
-        const text = readContentText(payload, config.protocol);
-        const parsed = text === undefined ? undefined : tryParseJson(text);
-        if (parsed !== undefined) return parsed;
-        this.promptModeOnlyFor = shape;
-      } catch (error) {
-        if (!(error instanceof ProviderError)) throw error;
-        const status = error.status;
-        // 400/422 才可能是“不支持 tools 参数”；404 通常是地址或模型不对，不应降级重试。
-        if (status !== 400 && status !== 422) throw error;
-        this.promptModeOnlyFor = shape;
+      // 关闭思维链：分类/摘要只需要结构化结论，推理既慢又占 max_tokens。
+      // 网关拒绝该参数时先退回“有工具但不关思考”，再退回纯文本模式。
+      const attempts = this.reasoningOptOutFailedFor === shape ? [false] : [true, false];
+      for (const disableReasoning of attempts) {
+        try {
+          const body = buildRequestBody(config, messages, { maxTokens, tool, disableReasoning });
+          const payload = await this.request(config, body);
+          assertNotTruncated(payload, config.protocol);
+          const structured = extractToolPayload(payload, config.protocol);
+          if (structured !== undefined) return structured;
+          const text = readContentText(payload, config.protocol);
+          const parsed = text === undefined ? undefined : tryParseJson(text);
+          if (parsed !== undefined) return parsed;
+          this.promptModeOnlyFor = shape;
+          break;
+        } catch (error) {
+          if (!(error instanceof ProviderError)) throw error;
+          const status = error.status;
+          // 400/422 才可能是参数不被接受；404 通常是地址或模型不对，不应降级重试。
+          if (status !== 400 && status !== 422) throw error;
+          if (disableReasoning) {
+            this.reasoningOptOutFailedFor = shape;
+            continue;
+          }
+          this.promptModeOnlyFor = shape;
+          break;
+        }
       }
     }
-    const payload = await this.request(config, buildRequestBody(config, inlineInstructions(messages), maxTokens));
+    const body = buildRequestBody(config, inlineInstructions(messages), {
+      maxTokens,
+      disableReasoning: this.reasoningOptOutFailedFor !== shape,
+    });
+    const payload = await this.request(config, body);
     assertNotTruncated(payload, config.protocol);
     return parseJsonContent(extractClassificationText(payload, config.protocol));
   }
@@ -307,13 +326,19 @@ function validateMigrationBaseUrl(rawBaseUrl?: string): string | undefined {
 
 type ClassificationMessage = { role: 'system' | 'user'; content: string };
 
+interface RequestOptions {
+  maxTokens?: number;
+  tool?: ToolSpec;
+  disableReasoning?: boolean;
+}
+
 function buildRequestBody(
   config: ProviderConfig,
   messages: ClassificationMessage[],
-  maxTokens = 500,
-  tool?: ToolSpec,
+  { maxTokens = 500, tool, disableReasoning = false }: RequestOptions = {},
 ): Record<string, unknown> {
   if (config.protocol === 'anthropic-messages') {
+    // Anthropic 默认不返回 thinking 块，无需显式关闭。
     return {
       model: config.model,
       max_tokens: maxTokens,
@@ -344,6 +369,7 @@ function buildRequestBody(
     messages,
     temperature: 0.1,
     max_tokens: maxTokens,
+    ...(disableReasoning ? { reasoning_effort: 'none' } : {}),
     ...(tool ? {
       tools: [{ type: 'function', function: { name: tool.name, description: tool.description, parameters: tool.schema, strict: tool.strict === true } }],
       tool_choice: { type: 'function', function: { name: tool.name } },
