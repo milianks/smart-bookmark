@@ -379,4 +379,98 @@ describe('OpenAICompatibleProvider', () => {
 
     await rejection;
   });
+
+  it('用工具调用强制结构化输出，并优先读取 tool_calls 参数', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ finish_reason: 'tool_calls', message: { role: 'assistant', content: '', tool_calls: [{
+        id: 'call_1', type: 'function', function: { name: 'submit_classification', arguments: JSON.stringify(result) },
+      }] } }],
+    }), { status: 200 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    const classified = await provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' });
+
+    expect(classified).toMatchObject(result);
+    expect(fetcher).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)) as {
+      tools: Array<{ function: { name: string } }>;
+      tool_choice: { function: { name: string } };
+    };
+    expect(body.tools[0]?.function.name).toBe('submit_classification');
+    expect(body.tool_choice.function.name).toBe('submit_classification');
+  });
+
+  it('anthropic 协议读取 tool_use 块作为结构化结果', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 'tu_1', name: 'submit_metadata', input: { summary: '摘要内容', tags: ['标签'] } }],
+    }), { status: 200 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    await expect(provider.generateMetadata(
+      { title: 't', url: 'https://example.com', domain: 'example.com', currentFolder: 'bar' },
+      { ...baseConfig, protocol: 'anthropic-messages' },
+    )).resolves.toEqual({ summary: '摘要内容', tags: ['标签'] });
+
+    const body = JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body)) as {
+      tools: Array<{ name: string; input_schema: Record<string, unknown> }>;
+      tool_choice: { type: string; name: string };
+    };
+    expect(body.tools[0]?.name).toBe('submit_metadata');
+    expect(body.tools[0]?.input_schema).toHaveProperty('required');
+    expect(body.tool_choice).toEqual({ type: 'tool', name: 'submit_metadata' });
+  });
+
+  it('网关拒绝 tools 参数时降级为文本模式，并把 system 指令并入 user 消息', async () => {
+    const fetcher = vi.fn<typeof fetch>(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown };
+      if (body.tools) return new Response(JSON.stringify({ error: 'tools unsupported' }), { status: 400 });
+      return new Response(JSON.stringify({
+        choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }],
+      }), { status: 200 });
+    });
+    const provider = new OpenAICompatibleProvider(fetcher as typeof fetch);
+
+    await expect(provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' })).resolves.toMatchObject(result);
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    const fallbackBody = JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body)) as {
+      tools?: unknown;
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(fallbackBody.tools).toBeUndefined();
+    expect(fallbackBody.messages[1]?.content).toContain('书签分类器');
+  });
+
+  it('网关静默忽略 tools 并返回散文时，降级到文本模式并复用同一个 Provider 能力判断', async () => {
+    const fetcher = vi.fn<typeof fetch>(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown };
+      const content = body.tools ? '你发来的是一条书签数据，需要我做什么？' : JSON.stringify(result);
+      return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content } }] }), { status: 200 });
+    });
+    const provider = new OpenAICompatibleProvider(fetcher as typeof fetch);
+    const config = { ...baseConfig, protocol: 'openai-chat-completions' as const };
+
+    await expect(provider.classify(input, [], config)).resolves.toMatchObject(result);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+
+    await expect(provider.classify(input, [], config)).resolves.toMatchObject(result);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    const thirdBody = JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body)) as { tools?: unknown };
+    expect(thirdBody.tools).toBeUndefined();
+  });
+
+  it('响应被 max_tokens 截断时给出可重试的独立错误', async () => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      choices: [{ finish_reason: 'length', message: { content: '{"action":"keep","confidence":0.9,"rea' } }],
+    }), { status: 200 }));
+    const provider = new OpenAICompatibleProvider(fetcher);
+
+    await expect(provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' })).rejects.toMatchObject({
+      name: 'ProviderError',
+      message: 'AI 响应被截断，请重试或减少书签数量',
+      retryable: true,
+    });
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
 });
