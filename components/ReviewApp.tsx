@@ -25,7 +25,13 @@ const statusDot: Record<ReviewItem['status'], string> = {
   stale: 'bg-slate-400',
 };
 
-export function ReviewApp() {
+const backLinkClass = 'inline-flex rounded text-xs font-medium text-violet-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 dark:text-violet-300 dark:focus-visible:ring-offset-slate-950';
+
+export function ReviewApp({ embedded = false, scanId: initialScanId, onBack }: {
+  embedded?: boolean;
+  scanId?: string;
+  onBack?: () => void;
+}) {
   const [state, setState] = useState<DashboardState | null>(null);
   const [selected, setSelected] = useState('');
   const [busyId, setBusyId] = useState('');
@@ -42,11 +48,11 @@ export function ReviewApp() {
   }, []);
 
   useEffect(() => {
-    const query = new URLSearchParams(window.location.search);
+    const query = embedded ? new URLSearchParams() : new URLSearchParams(window.location.search);
     setSelected(query.get('item') ?? '');
-    setScanId(query.get('scan') ?? '');
+    setScanId(initialScanId ?? query.get('scan') ?? '');
     void refresh().catch((reason: unknown) => setError(messageOf(reason)));
-  }, [refresh]);
+  }, [embedded, initialScanId, refresh]);
 
   const items = useMemo(() => {
     const all = scanId ? (state?.historicalReviews ?? []) : (state?.pendingReviews ?? []);
@@ -137,12 +143,12 @@ export function ReviewApp() {
     await refresh().catch(() => undefined);
   }
 
-  return <main className="mx-auto w-full max-w-3xl space-y-4 px-5 py-7 sm:px-8 lg:px-10" aria-busy={!state}>
+  return <main className={embedded ? 'w-[390px] space-y-4 p-4' : 'mx-auto w-full max-w-3xl space-y-4 px-5 py-7 sm:px-8 lg:px-10'} aria-busy={!state}>
     <header>
-      <a href={chrome.runtime.getURL('/popup.html')} className="inline-flex rounded text-xs font-medium text-violet-700 underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 focus-visible:ring-offset-2 dark:text-violet-300 dark:focus-visible:ring-offset-slate-950">← 返回书签管理</a>
-      <div className="mt-3 flex flex-wrap items-start justify-between gap-4">
+      {embedded ? <button type="button" onClick={onBack} className={backLinkClass}>← 返回书签管理</button> : <a href={chrome.runtime.getURL('/popup.html')} className={backLinkClass}>← 返回书签管理</a>}
+      <div className={cn('mt-3 flex flex-wrap items-start justify-between', embedded ? 'gap-3' : 'gap-4')}>
         <div className="min-w-0">
-          <h1 className="text-xl font-semibold tracking-tight">待确认的整理</h1>
+          <h1 className={cn('font-semibold tracking-tight', embedded ? 'text-base' : 'text-xl')}>待确认的整理</h1>
           <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">确认后才会创建新目录或移动低置信度书签。</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
@@ -168,11 +174,11 @@ export function ReviewApp() {
     </Card> : <div className="grid gap-4 lg:grid-cols-[280px_1fr]">
       <Card className="h-fit min-w-0 lg:sticky lg:top-6">
         <CardHeader className="flex items-center justify-between gap-3">
-          <h2 className="text-base font-semibold">建议列表</h2>
+          <h2 className={cn('font-semibold', embedded ? 'text-sm' : 'text-base')}>建议列表</h2>
           <Badge>{items.length}</Badge>
         </CardHeader>
-        <div className="flex gap-2 overflow-x-auto p-2 lg:block">
-          {groups.map(([label, group]) => <div key={label} className="mb-2 w-56 shrink-0 lg:w-full">
+        <div className={embedded ? 'space-y-2 p-2' : 'flex gap-2 overflow-x-auto p-2 lg:block'}>
+          {groups.map(([label, group]) => <div key={label} className={cn('mb-2', embedded ? 'w-full' : 'w-56 shrink-0 lg:w-full')}>
             <div className="flex items-center justify-between gap-2 px-1 pb-1">
               <span className="min-w-0 truncate text-[11px] font-medium text-slate-500 dark:text-slate-400" title={label}>{label} · {group.length}</span>
               {group.length > 1 && group.some((item) => item.status === 'pending') && <button type="button" disabled={batchBusy} onClick={() => void approveGroup(group)} className="shrink-0 rounded text-[11px] font-semibold text-violet-700 underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 disabled:opacity-50 dark:text-violet-300">批准本组</button>}
@@ -199,12 +205,13 @@ export function ReviewApp() {
           </div>)}
         </div>
       </Card>
-      {active && <ReviewDetail item={active} metadata={active.metadata} busy={busyId === active.id} metadataBusy={metadataBusyId === active.bookmarkId} folders={state.folders} overrideFolder={overrideFolder} onOverrideChange={setOverrideFolder} onGenerateMetadata={() => void generateMetadata(active.bookmarkId)} onApprove={() => void decide(active, 'approve')} onReject={() => void decide(active, 'reject')} />}
+      {active && <ReviewDetail compact={embedded} item={active} metadata={active.metadata} busy={busyId === active.id} metadataBusy={metadataBusyId === active.bookmarkId} folders={state.folders} overrideFolder={overrideFolder} onOverrideChange={setOverrideFolder} onGenerateMetadata={() => void generateMetadata(active.bookmarkId)} onApprove={() => void decide(active, 'approve')} onReject={() => void decide(active, 'reject')} />}
     </div>}
   </main>;
 }
 
-function ReviewDetail({ item, metadata, busy, metadataBusy, folders, overrideFolder, onOverrideChange, onGenerateMetadata, onApprove, onReject }: {
+function ReviewDetail({ compact, item, metadata, busy, metadataBusy, folders, overrideFolder, onOverrideChange, onGenerateMetadata, onApprove, onReject }: {
+  compact: boolean;
   item: ReviewItem;
   metadata?: ReviewItem['metadata'];
   busy: boolean;
@@ -225,17 +232,17 @@ function ReviewDetail({ item, metadata, busy, metadataBusy, folders, overrideFol
   const confidence = Math.round(item.classification.confidence * 100);
 
   return <Card className="min-w-0">
-    <CardHeader className="flex flex-wrap items-start justify-between gap-4">
+    <CardHeader className={cn('flex flex-wrap justify-between', compact ? 'flex-col items-stretch gap-2' : 'items-start gap-4')}>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone="primary">{sourceLabel}</Badge>
           {item.status !== 'pending' && <Badge tone={statusTone[item.status]}>{reviewStatusLabel(item.status)}</Badge>}
           {item.scanId && <Badge>历史扫描</Badge>}
         </div>
-        <h2 className="mt-2 break-words text-lg font-semibold">{item.title}</h2>
+        <h2 className={cn('mt-2 break-words font-semibold', compact ? 'text-base' : 'text-lg')}>{item.title}</h2>
         <p className="mt-1 truncate text-xs text-slate-500 dark:text-slate-400">{safeHostname(item.url)}</p>
       </div>
-      <div className="min-w-[7rem] shrink-0">
+      <div className={compact ? 'w-full' : 'min-w-[7rem] shrink-0'}>
         <div className="flex items-baseline justify-between gap-2">
           <span className="text-xs text-slate-500 dark:text-slate-400">置信度</span>
           <span className="text-sm font-semibold">{confidence}%</span>
@@ -252,20 +259,20 @@ function ReviewDetail({ item, metadata, busy, metadataBusy, folders, overrideFol
         </div>
       </div>
     </CardHeader>
-    <CardContent className="space-y-4">
+    <CardContent className={compact ? 'space-y-3' : 'space-y-4'}>
       <div>
         <p className="text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">网页地址</p>
         <a href={item.url} target="_blank" rel="noreferrer" className="mt-1 block break-all rounded text-sm text-violet-700 underline decoration-violet-200 underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500 dark:text-violet-300 dark:decoration-violet-800 dark:focus-visible:ring-offset-slate-950">{item.url}</a>
       </div>
       {metadata && <div className="rounded-xl border border-emerald-100 bg-emerald-50 p-3 dark:border-emerald-900 dark:bg-emerald-950/30">
         <p className="text-xs font-medium text-emerald-700 dark:text-emerald-300">摘要与标签</p>
-        <p className="mt-1 text-sm leading-6 text-slate-800 dark:text-slate-200">{metadata.summary}</p>
+        <p className={cn('mt-1 text-sm text-slate-800 dark:text-slate-200', compact ? 'leading-5' : 'leading-6')}>{metadata.summary}</p>
         <div className="mt-2 flex flex-wrap gap-1">{metadata.tags.map((tag) => <span key={tag} className="rounded bg-white px-1.5 py-0.5 text-xs text-slate-600 dark:bg-slate-900 dark:text-slate-300">#{tag}</span>)}</div>
       </div>}
       <div className="rounded-xl border border-slate-100 bg-slate-50 p-3 dark:border-slate-800 dark:bg-slate-950">
         <p className="text-xs font-medium text-slate-500 dark:text-slate-400">推荐操作</p>
         <p className="mt-1 break-words text-sm font-semibold">{recommendation}</p>
-        <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{item.classification.reason}</p>
+        <p className={cn('mt-2 text-sm text-slate-600 dark:text-slate-300', compact ? 'leading-5' : 'leading-6')}>{item.classification.reason}</p>
       </div>
       {item.status === 'pending' && folders.length > 0 && <label className="block text-xs text-slate-500 dark:text-slate-400">
         改选目标文件夹
@@ -279,9 +286,9 @@ function ReviewDetail({ item, metadata, busy, metadataBusy, folders, overrideFol
         </select>
       </label>}
       <div className="flex flex-wrap items-center gap-2">
-        {item.status === 'pending' && (item.classification.action !== 'keep' || overrideFolder) && <Button disabled={busy} onClick={onApprove}>{busy ? '正在处理…' : overrideFolder ? '移动到所选文件夹' : item.classification.action === 'suggest_folder' ? '创建文件夹并归档' : '移动到推荐文件夹'}</Button>}
-        {item.status === 'pending' && <Button variant="secondary" disabled={busy} onClick={onReject}>保留原位</Button>}
-        <Button variant="ghost" disabled={metadataBusy || busy} onClick={onGenerateMetadata}>{metadataBusy ? '生成中…' : metadata ? '重新生成摘要与标签' : '生成摘要与标签'}</Button>
+        {item.status === 'pending' && (item.classification.action !== 'keep' || overrideFolder) && <Button size={compact ? 'sm' : 'md'} disabled={busy} onClick={onApprove}>{busy ? '正在处理…' : overrideFolder ? '移动到所选文件夹' : item.classification.action === 'suggest_folder' ? '创建文件夹并归档' : '移动到推荐文件夹'}</Button>}
+        {item.status === 'pending' && <Button size={compact ? 'sm' : 'md'} variant="secondary" disabled={busy} onClick={onReject}>保留原位</Button>}
+        <Button size={compact ? 'sm' : 'md'} variant="ghost" disabled={metadataBusy || busy} onClick={onGenerateMetadata}>{metadataBusy ? '生成中…' : metadata ? '重新生成摘要与标签' : '生成摘要与标签'}</Button>
       </div>
     </CardContent>
   </Card>;
