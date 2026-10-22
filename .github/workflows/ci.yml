@@ -46,7 +46,7 @@ jobs:
         run: pnpm build
 
       - name: Upload extension artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: chrome-mv3
           path: .output/chrome-mv3
