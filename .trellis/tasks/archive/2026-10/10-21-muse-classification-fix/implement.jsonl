@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "实施内容感知分类需遵循的规范：backend/extension-runtime-contract.md"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "实施内容感知分类需遵循的规范：backend/error-handling.md"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "实施内容感知分类需遵循的规范：backend/database-guidelines.md"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "实施内容感知分类需遵循的规范：frontend/type-safety.md"}
+{"file": ".trellis/spec/frontend/extension-ui-contract.md", "reason": "实施内容感知分类需遵循的规范：frontend/extension-ui-contract.md"}

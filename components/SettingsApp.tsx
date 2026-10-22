@@ -135,6 +135,31 @@ export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
     }
   }
 
+  async function toggleContentAssist(checked: boolean): Promise<void> {
+    if (!form || busy) return;
+    setBusy(true);
+    setError('');
+    try {
+      if (checked) {
+        // Request broad web access from this user gesture so extraction works at collect time.
+        const granted = await chrome.permissions.request({ origins: ['https://*/*'] });
+        if (!granted) {
+          setError('未授予网页访问权限，内容辅助分类未开启。');
+          return;
+        }
+      }
+      change('contentAssistEnabled', checked);
+      const response = await sendMessage({ type: 'settings:update', settings: { contentAssistEnabled: checked } });
+      unwrapResponse(response);
+      savedForm.current = savedForm.current ? { ...savedForm.current, contentAssistEnabled: checked } : savedForm.current;
+      setMessage(checked ? '内容辅助分类已开启，收藏时将读取已授权站点内容。' : '内容辅助分类已关闭。');
+    } catch (reason) {
+      setError(messageOf(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   if (!form) return <main className={embedded ? 'w-[390px] space-y-4 p-4' : 'mx-auto w-full max-w-3xl space-y-4 px-5 py-7 sm:px-8 lg:px-10'}>
     {error ? <Notice tone="error" className="text-sm">{error}</Notice> : <>
       <div className="flex items-center gap-3"><Skeleton className="size-10 rounded-2xl" /><div className="flex-1 space-y-2"><Skeleton className="h-5 w-24" /><Skeleton className="h-3 w-40" /></div></div>
@@ -217,6 +242,25 @@ export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
       </CardContent>
     </Card>
 
+    <Card>
+      <CardHeader><h2 className="font-semibold">内容辅助分类</h2><p className="mt-1 text-sm text-slate-500 dark:text-slate-400">收藏时读取已授权站点的网页内容，提取摘要与主题辅助分类；原文不保存。</p></CardHeader>
+      <CardContent className="space-y-4">
+        <Switch checked={form.contentAssistEnabled} disabled={busy} label="读取网页内容辅助分类" title="内容辅助分类" description="开启后会请求网页访问权限；未授权的站点、无法访问或敏感站点仍按标题/URL 分类。默认关闭。" onCheckedChange={(checked) => void toggleContentAssist(checked)} />
+        {form.contentAssistEnabled && <>
+          <Field label="正文提取上限" hint="越多越准但费用与延迟越高；默认 3000 字符。">
+            <Select value={String(form.extractCharLimit)} disabled={busy} onChange={(event) => change('extractCharLimit', Number(event.target.value) as FormSettings['extractCharLimit'])}>
+              <option value="1000">1,000 字符</option>
+              <option value="3000">3,000 字符（推荐）</option>
+              <option value="6000">6,000 字符</option>
+            </Select>
+          </Field>
+          <Field label="不提取内容的站点" hint="用逗号或换行分隔域名，例如 bank.example.com；这些站点不读取网页内容。">
+            <Input disabled={busy} value={form.contentAssistDisabledSites.join(', ')} onChange={(event) => change('contentAssistDisabledSites', event.target.value.split(/[,\n]+/).map((site) => site.trim()).filter(Boolean))} placeholder="example.com, intranet.local" />
+          </Field>
+        </>}
+      </CardContent>
+    </Card>
+
     <Card><CardContent>
       <Disclosure title="通知设置">
         <div className="space-y-2">
@@ -229,8 +273,9 @@ export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
     <Card><CardContent>
       <Disclosure title="隐私、权限与密钥存储">
         <div className="space-y-2 text-sm leading-6 text-slate-600 dark:text-slate-300">
-          <p>分类只发送当前书签的标题、URL、域名和文件夹清单，不读取网页正文，也不上传整套书签库。</p>
-          <p>扩展不申请访问所有网页。点击“授权并测试 AI”时，Chrome 只请求上方 API 地址的来源权限。</p>
+          <p>默认分类只发送当前书签的标题、URL、域名和文件夹清单，不读取网页正文，也不上传整套书签库。</p>
+          <p>开启“内容辅助分类”并授权网页访问后，收藏时会读取当前页面并归纳为摘要/主题/内容类型用于分类；原始正文处理后即丢弃、不保存，敏感站点默认跳过。可随时关闭该开关恢复仅元数据分类。</p>
+          <p>扩展默认不申请访问所有网页。点击“授权并测试 AI”时，Chrome 只请求上方 API 地址的来源权限；开启内容辅助分类时才另外请求网页访问权限。</p>
           <p>API Key 保存在扩展本地存储中。请使用可撤销、低额度的密钥，避免在共享设备上保存。</p>
           <p>默认仅整理“智能书签”目录及其子目录中的新增项；开启“接管内置根目录”后会处理书签栏、其他书签和移动设备书签根目录的新增书签。</p>
         </div>

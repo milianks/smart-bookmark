@@ -194,4 +194,35 @@ describe('ChromeStateRepository', () => {
     expect(malformed.smartBookmarkRootId).toBeUndefined();
     expect(malformed.smartBookmarkInitialized).toBe(false);
   });
+
+  it('defaults new content-assist settings and normalizes preferences/pageProfiles', async () => {
+    const values: Record<string, unknown> = {
+      [STORAGE_KEY]: {
+        version: 1,
+        settings: { enabled: true },
+        preferences: {
+          'repo|AI Agent': { key: 'repo|AI Agent', topics: ['AI Agent'], contentType: 'repo', folderId: 'research', weight: 2, count: 2, createdAt: 1, updatedAt: 2 },
+          broken: { folderId: '' },
+        },
+        pageProfiles: {
+          'https://github.com/a/b': { summary: 'An agent', topics: ['AI Agent'], contentType: 'repo', charCount: 120, generatedAt: 5 },
+          bad: { summary: '', topics: [], contentType: 'repo', charCount: 0, generatedAt: 0 },
+        },
+      },
+    };
+    const storage: LocalStorageArea = {
+      get: vi.fn(async (key) => ({ [key]: values[key] })),
+      set: vi.fn(async (items) => Object.assign(values, items)),
+    };
+    const loaded = await new ChromeStateRepository(storage).load();
+
+    expect(loaded.settings).toMatchObject({
+      contentAssistEnabled: false,
+      extractCharLimit: 3000,
+      contentAssistDisabledSites: [],
+    });
+    expect(Object.keys(loaded.preferences)).toEqual(['repo|AI Agent']);
+    expect(Object.keys(loaded.pageProfiles)).toEqual(['https://github.com/a/b']);
+    expect(loaded.pageProfiles['https://github.com/a/b']).toMatchObject({ summary: 'An agent', contentType: 'repo' });
+  });
 });

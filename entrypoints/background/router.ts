@@ -14,6 +14,9 @@ const SettingsPatchSchema = z.object({
   organizeExternalRoots: z.boolean().optional(),
   notificationsEnabled: z.boolean().optional(),
   successNotifications: z.boolean().optional(),
+  contentAssistEnabled: z.boolean().optional(),
+  extractCharLimit: z.union([z.literal(1000), z.literal(3000), z.literal(6000)]).optional(),
+  contentAssistDisabledSites: z.array(z.string().trim().min(1).max(253)).max(200).optional(),
   apiKey: z.string().max(4_000).optional(),
 }).strict();
 
