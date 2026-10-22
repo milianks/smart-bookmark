@@ -57,6 +57,9 @@ export const SettingsSchema = z.object({
   notificationsEnabled: z.boolean(),
   successNotifications: z.boolean(),
   organizeExternalRoots: z.boolean(),
+  contentAssistEnabled: z.boolean(),
+  extractCharLimit: z.union([z.literal(1000), z.literal(3000), z.literal(6000)]),
+  contentAssistDisabledSites: z.array(z.string().trim().min(1).max(253)).max(200),
 }).strict();
 
 export type Settings = z.infer<typeof SettingsSchema>;
@@ -76,6 +79,9 @@ export const DEFAULT_SETTINGS: Settings = {
   notificationsEnabled: true,
   successNotifications: false,
   organizeExternalRoots: false,
+  contentAssistEnabled: false,
+  extractCharLimit: 3000,
+  contentAssistDisabledSites: [],
 };
 
 export interface BookmarkSnapshot {
@@ -90,6 +96,15 @@ export interface BookmarkSample {
   title: string;
   url: string;
   hostname: string;
+}
+
+/** Lightweight, non-verbatim page profile derived from an extracted page. Never stores raw text. */
+export interface PageProfile {
+  summary: string;
+  topics: string[];
+  contentType: string;
+  charCount: number;
+  generatedAt: number;
 }
 
 export interface FolderSummary {
@@ -126,6 +141,7 @@ export interface BookmarkJob {
   duplicateOf?: string;
   externalRoot?: boolean;
   metadata?: BookmarkMetadata;
+  pageProfile?: PageProfile;
 }
 
 export type ReviewStatus = 'pending' | 'approving' | 'approved' | 'rejected' | 'stale';
@@ -145,6 +161,7 @@ export interface ReviewItem {
   targetFolderId?: string;
   scanId?: string;
   metadata?: BookmarkMetadata;
+  pageProfile?: PageProfile;
 }
 
 export interface CorrectionEntry {
@@ -152,6 +169,22 @@ export interface CorrectionEntry {
   action: 'move' | 'keep';
   folderId?: string;
   createdAt: number;
+  topics?: string[];
+  contentType?: string;
+  count?: number;
+  lastAt?: number;
+}
+
+/** Aggregated, topic/content-type preference learned from manual corrections. */
+export interface PreferenceRule {
+  key: string;
+  topics: string[];
+  contentType: string;
+  folderId: string;
+  weight: number;
+  count: number;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export type HistoricalScanStatus = 'idle' | 'scanning' | 'awaiting_review' | 'completed' | 'failed';
@@ -243,6 +276,8 @@ export interface PersistedState {
   lastHistoricalUndo?: HistoricalBatchUndoRecord;
   bookmarkMetadata: Record<string, BookmarkMetadata>;
   corrections: Record<string, CorrectionEntry>;
+  preferences: Record<string, PreferenceRule>;
+  pageProfiles: Record<string, PageProfile>;
 }
 
 export interface HistoricalScanSummary extends Omit<HistoricalScanState, 'coveredIds' | 'forceOrganize'> {
@@ -282,4 +317,6 @@ export const emptyPersistedState = (): PersistedState => ({
   historicalScan: undefined,
   corrections: {},
   bookmarkMetadata: {},
+  preferences: {},
+  pageProfiles: {},
 });

@@ -10,6 +10,8 @@ import { ChromeNotificationService } from '../services/notification.service';
 import { OrganizerService } from '../services/organizer.service';
 import { ScanService } from '../services/scan.service';
 import { SettingsService } from '../services/settings.service';
+import { PageExtractorService } from '../services/page-extractor.service';
+import { ChromePageExtractionPort } from '../services/page-extractor.chrome';
 export default defineBackground(() => {
   const store = new ChromeStateRepository();
   const bookmarks = new ChromeBookmarkService();
@@ -21,6 +23,7 @@ export default defineBackground(() => {
     },
   });
   const classifier = new ClassificationService(provider, store);
+  const pageProfiles = new PageExtractorService({ port: new ChromePageExtractionPort() });
   const notifications = new ChromeNotificationService();
   const organizer = new OrganizerService({
     bookmarks,
@@ -39,6 +42,7 @@ export default defineBackground(() => {
         return false;
       }
     },
+    pageProfiles,
   });
   const scan = new ScanService({ bookmarks, store, processPending: () => organizer.processPending(), approveReview: (id) => organizer.approveReview(id) });
   const settings = new SettingsService({

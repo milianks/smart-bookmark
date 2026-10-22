@@ -1,0 +1,61 @@
+name: Bug report
+description: 报告一个可复现的问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈。请尽量提供可复现步骤，并移除密钥、书签 URL 等敏感信息。
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 问题描述
+      description: 发生了什么？你期望发生什么？
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 ...
+        2. 收藏 ...
+        3. 看到 ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 扩展版本
+      placeholder: 例如 0.2.0
+    validations:
+      required: true
+  - type: input
+    id: chrome
+    attributes:
+      label: Chrome 版本
+      placeholder: 例如 134.0.6998.89
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 相关模块
+      multiple: true
+      options:
+        - 分类 / 自动整理
+        - 内容辅助分类
+        - Review 确认
+        - 历史扫描
+        - 摘要与标签
+        - 设置 / 权限
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志或截图
+      description: 可粘贴扩展 Service Worker 控制台输出（请先移除密钥与敏感 URL）。
+    validations:
+      required: false

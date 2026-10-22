@@ -62,6 +62,27 @@ describe('ClassificationService', () => {
     expect(provider.classify).not.toHaveBeenCalled();
   });
 
+  it('主题/内容类型聚合偏好命中时直接路由到纠错目录', async () => {
+    const provider = createProvider();
+    const store = new MemoryStateRepository();
+    await store.update((state) => {
+      state.preferences['repo|AI Agent'] = {
+        key: 'repo|AI Agent', topics: ['AI Agent'], contentType: 'repo',
+        folderId: 'research', weight: 2, count: 2, createdAt: 1, updatedAt: 1,
+      };
+    });
+    const service = new ClassificationService(provider, store);
+
+    const result = await service.classify({
+      title: 'Some agent', url: 'https://example.com/agent', domain: 'example.com',
+      currentFolder: 'Bookmarks bar', currentFolderId: 'bar',
+      pageProfile: { summary: 'An AI agent', topics: ['AI Agent', 'Python'], contentType: 'repo' },
+    }, folders, { ...DEFAULT_SETTINGS, apiKey: 'test-key' }, false);
+
+    expect(result).toMatchObject({ source: 'rule', result: { action: 'move', targetFolderId: 'research' } });
+    expect(provider.classify).not.toHaveBeenCalled();
+  });
+
   it('最近纠错样本作为用户历史决定注入模型提示', async () => {
     const provider = createProvider();
     const store = new MemoryStateRepository();

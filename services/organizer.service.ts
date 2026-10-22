@@ -13,6 +13,7 @@ import type {
   ClassifiedResult,
   DashboardState,
   FolderSummary,
+  PageProfile,
   PendingOperation,
   PersistedState,
   ReviewItem,
@@ -20,6 +21,10 @@ import type {
   UndoRecord,
 } from '../types/domain';
 import type { NotificationPort } from './notification.service';
+
+export interface PageProfileProvider {
+  extractProfile(url: string, settings: Settings, hostname: string): Promise<PageProfile | undefined>;
+}
 
 export interface RetryAlarmPort {
   schedule(delayMs: number): Promise<void> | void;
@@ -32,6 +37,7 @@ export interface OrganizerDependencies {
   notifications: NotificationPort;
   alarms: RetryAlarmPort;
   hasProviderPermission(baseUrl: string): Promise<boolean>;
+  pageProfiles?: PageProfileProvider;
   now?: () => number;
   makeId?: (prefix: string) => string;
 }
@@ -97,6 +103,11 @@ export class OrganizerService {
       });
       return;
     }
+    const pageProfile = this.deps.pageProfiles
+      ? await this.deps.pageProfiles
+        .extractProfile(snapshot.url, state.settings, new URL(snapshot.url).hostname)
+        .catch(() => undefined)
+      : undefined;
     const job: BookmarkJob = {
       bookmark: snapshot,
       status: state.settings.apiKey.trim() ? 'queued' : 'awaiting_configuration',
@@ -104,6 +115,7 @@ export class OrganizerService {
       createdAt: this.now(),
       updatedAt: this.now(),
       ...(externalRoot ? { externalRoot: true } : {}),
+      ...(pageProfile ? { pageProfile } : {}),
     };
     await this.deps.store.update((current) => {
       if (current.jobs[id]) return;
@@ -429,7 +441,7 @@ export class OrganizerService {
       const job = current.jobs[item.bookmarkId];
       if (job) job.status = 'completed';
       current.pendingOperation = undefined;
-      if (overrideFolderId) recordCorrection(current, item.url, { action: 'move', folderId: overrideFolderId }, this.now());
+      if (overrideFolderId) recordCorrection(current, item.url, { action: 'move', folderId: overrideFolderId }, this.now(), item.pageProfile);
       if (item.scanId) {
         const previous = current.lastHistoricalUndo?.scanId === item.scanId
           ? current.lastHistoricalUndo
@@ -460,7 +472,7 @@ export class OrganizerService {
       if (!item || item.status === 'rejected') return;
       if (item.status === 'approved' || item.status === 'stale') throw new Error('这条建议已经关闭。');
       await this.closeReview(item, 'rejected', '用户选择保留书签原位。', 'review_rejected');
-      await this.deps.store.update((current) => recordCorrection(current, item.url, { action: 'keep' }, this.now()));
+      await this.deps.store.update((current) => recordCorrection(current, item.url, { action: 'keep' }, this.now(), item.pageProfile));
       if (item.scanId) await this.refreshHistoricalScan(item.scanId);
     });
   }
@@ -574,6 +586,7 @@ export class OrganizerService {
             domain: new URL(item.bookmark.url ?? '').hostname,
             currentFolder: item.currentFolder.path,
             currentFolderId: item.currentFolder.id,
+            ...(item.job.pageProfile ? { pageProfile: toProfileInput(item.job.pageProfile) } : {}),
           })),
           batchPrepared[0]!.folders,
           batchPrepared[0]!.settings,
@@ -712,6 +725,7 @@ export class OrganizerService {
         domain: new URL(bookmark.url ?? '').hostname,
         currentFolder: currentFolder.path,
         currentFolderId: currentFolder.id,
+        ...(job.pageProfile ? { pageProfile: toProfileInput(job.pageProfile) } : {}),
       }, folders, settings, hasPermission);
     } catch (error) {
       await this.handleClassifyError(id, job, settings, error);
@@ -919,6 +933,7 @@ export class OrganizerService {
       createdAt: this.now(),
       status: 'pending',
       ...(job.scanId ? { scanId: job.scanId } : {}),
+      ...(job.pageProfile ? { pageProfile: job.pageProfile } : {}),
     };
     await this.deps.store.update((state) => {
       if (state.reviews[review.id]?.status === 'pending') return;
@@ -1231,19 +1246,62 @@ function pushUndoRecord(state: PersistedState, record: UndoRecord): void {
   state.lastUndo = record;
 }
 
-const MAX_CORRECTIONS = 50;
+function toProfileInput(profile: PageProfile): { summary: string; topics: string[]; contentType: string } {
+  return { summary: profile.summary, topics: profile.topics, contentType: profile.contentType };
+}
+
+const MAX_CORRECTIONS = 200;
+const MAX_PREFERENCES = 200;
 
 function recordCorrection(
   state: PersistedState,
   url: string,
   entry: { action: CorrectionEntry['action']; folderId?: string },
   now: number,
+  profile?: PageProfile,
 ): void {
   const domain = hostnameKey(url);
-  state.corrections[domain] = { domain, ...entry, createdAt: now };
+  const existing = state.corrections[domain];
+  const topics = profile?.topics?.slice(0, 8) ?? existing?.topics;
+  const contentType = profile?.contentType ?? existing?.contentType;
+  state.corrections[domain] = {
+    domain,
+    ...entry,
+    ...(topics && topics.length > 0 ? { topics } : {}),
+    ...(contentType ? { contentType } : {}),
+    count: (existing?.count ?? 0) + 1,
+    lastAt: now,
+    createdAt: existing?.createdAt ?? now,
+  };
   const keys = Object.keys(state.corrections)
-    .sort((a, b) => state.corrections[a]!.createdAt - state.corrections[b]!.createdAt);
+    .sort((a, b) => (state.corrections[a]!.lastAt ?? state.corrections[a]!.createdAt)
+      - (state.corrections[b]!.lastAt ?? state.corrections[b]!.createdAt));
   for (const key of keys.slice(0, Math.max(0, keys.length - MAX_CORRECTIONS))) delete state.corrections[key];
+
+  if (entry.action !== 'move' || !entry.folderId || !contentType || !topics || topics.length === 0) return;
+  const sortedTopics = [...new Set(topics.map((topic) => topic.trim()).filter(Boolean))].slice(0, 8);
+  if (sortedTopics.length === 0) return;
+  const preferenceKey = `${contentType}|${[...sortedTopics].sort().slice(0, 3).join(',')}`;
+  const rule = state.preferences[preferenceKey] ?? {
+    key: preferenceKey,
+    topics: sortedTopics,
+    contentType,
+    folderId: entry.folderId,
+    weight: 0,
+    count: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+  rule.folderId = entry.folderId;
+  rule.topics = sortedTopics;
+  rule.contentType = contentType;
+  rule.weight = Math.min(rule.weight + 1, 10);
+  rule.count += 1;
+  rule.updatedAt = now;
+  state.preferences[preferenceKey] = rule;
+  const preferenceKeys = Object.keys(state.preferences)
+    .sort((a, b) => state.preferences[b]!.updatedAt - state.preferences[a]!.updatedAt);
+  for (const key of preferenceKeys.slice(MAX_PREFERENCES)) delete state.preferences[key];
 }
 
 function removeUndoRecord(state: PersistedState, bookmarkId: string, originalToFolderId: string): void {

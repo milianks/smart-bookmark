@@ -1,6 +1,6 @@
 {
   "name": "ai-bookmark-manager",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,9 +8,11 @@
     "build": "wxt build",
     "typecheck": "tsc --noEmit",
     "test": "vitest",
-    "postinstall": "wxt prepare"
+    "postinstall": "wxt prepare",
+    "test:run": "vitest --run"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@wxt-dev/module-react": "latest",
     "clsx": "^2.1.1",
     "react": "^19.1.0",
@@ -19,14 +21,18 @@
     "zod": "^4.1.12"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "5.0.4",
     "@tailwindcss/vite": "^4.1.16",
     "@types/chrome": "^0.0.322",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "5.0.4",
     "tailwindcss": "^4.1.16",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
     "wxt": "latest"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
   }
 }

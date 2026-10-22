@@ -74,6 +74,8 @@ function normalizeState(input: Partial<PersistedState>): PersistedState {
     undoStack: normalizeUndoStack(input.undoStack, input.lastUndo),
     corrections: normalizeCorrections(input.corrections),
     bookmarkMetadata: normalizeBookmarkMetadata(input.bookmarkMetadata),
+    preferences: normalizePreferences(input.preferences),
+    pageProfiles: normalizePageProfiles(input.pageProfiles),
     ...(SettingsDraftSchema.safeParse(input.settingsDraft).success
       ? { settingsDraft: SettingsDraftSchema.parse(input.settingsDraft) }
       : {}),
@@ -142,8 +144,62 @@ function normalizeCorrections(input: unknown): PersistedState['corrections'] {
       action: entry.action,
       ...(entry.action === 'move' ? { folderId: entry.folderId as string } : {}),
       createdAt: entry.createdAt,
+      ...(Array.isArray(entry.topics)
+        ? { topics: entry.topics.filter((topic): topic is string => typeof topic === 'string' && topic.trim().length > 0).slice(0, 8) }
+        : {}),
+      ...(typeof entry.contentType === 'string' ? { contentType: entry.contentType.slice(0, 32) } : {}),
+      ...(typeof entry.count === 'number' && Number.isFinite(entry.count) && entry.count >= 0 ? { count: Math.floor(entry.count) } : {}),
+      ...(typeof entry.lastAt === 'number' && Number.isFinite(entry.lastAt) && entry.lastAt >= 0 ? { lastAt: entry.lastAt } : {}),
     };
   }
+  return result;
+}
+
+function normalizePreferences(input: unknown): PersistedState['preferences'] {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const result: PersistedState['preferences'] = {};
+  const entries: Array<[string, PersistedState['preferences'][string]]> = [];
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!key || typeof value !== 'object' || value === null) continue;
+    const entry = value as Record<string, unknown>;
+    if (typeof entry.folderId !== 'string' || entry.folderId.trim().length === 0) continue;
+    if (typeof entry.contentType !== 'string') continue;
+    if (!Array.isArray(entry.topics)) continue;
+    const topics = entry.topics.filter((topic): topic is string => typeof topic === 'string' && topic.trim().length > 0).slice(0, 8);
+    const weight = typeof entry.weight === 'number' && Number.isFinite(entry.weight) ? entry.weight : 0;
+    const count = typeof entry.count === 'number' && Number.isFinite(entry.count) ? Math.max(0, Math.floor(entry.count)) : 0;
+    const createdAt = typeof entry.createdAt === 'number' && Number.isFinite(entry.createdAt) ? entry.createdAt : Date.now();
+    const updatedAt = typeof entry.updatedAt === 'number' && Number.isFinite(entry.updatedAt) ? entry.updatedAt : createdAt;
+    entries.push([key, { key, topics, contentType: entry.contentType.slice(0, 32), folderId: entry.folderId, weight, count, createdAt, updatedAt }]);
+  }
+  entries.sort((a, b) => b[1].updatedAt - a[1].updatedAt);
+  for (const [key, entry] of entries.slice(0, 200)) result[key] = entry;
+  return result;
+}
+
+function normalizePageProfiles(input: unknown): PersistedState['pageProfiles'] {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const result: PersistedState['pageProfiles'] = {};
+  const entries: Array<[string, PersistedState['pageProfiles'][string]]> = [];
+  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!key || typeof value !== 'object' || value === null) continue;
+    const entry = value as Record<string, unknown>;
+    if (typeof entry.summary !== 'string' || entry.summary.trim().length === 0 || entry.summary.length > 500) continue;
+    if (!Array.isArray(entry.topics)) continue;
+    const topics = entry.topics.filter((topic): topic is string => typeof topic === 'string' && topic.trim().length > 0 && topic.length <= 32).slice(0, 8);
+    if (typeof entry.contentType !== 'string') continue;
+    if (typeof entry.generatedAt !== 'number' || !Number.isFinite(entry.generatedAt)) continue;
+    const charCount = typeof entry.charCount === 'number' && Number.isFinite(entry.charCount) ? Math.max(0, Math.floor(entry.charCount)) : 0;
+    entries.push([key, {
+      summary: entry.summary.trim(),
+      topics,
+      contentType: entry.contentType.slice(0, 32),
+      charCount,
+      generatedAt: entry.generatedAt,
+    }]);
+  }
+  entries.sort((a, b) => b[1].generatedAt - a[1].generatedAt);
+  for (const [key, entry] of entries.slice(0, 100)) result[key] = entry;
   return result;
 }
 

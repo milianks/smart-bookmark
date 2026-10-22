@@ -4,6 +4,7 @@ import type {
   ClassificationResult,
   CorrectionEntry,
   FolderSummary,
+  PreferenceRule,
   Settings,
 } from '../types/domain';
 import type { StateRepository } from '../lib/storage/repository';
@@ -62,6 +63,8 @@ export class ClassificationService implements ClassifierPort {
 
     const corrected = applyCorrection(snapshot.corrections[hostnameKey(input.domain)], input, folders);
     if (corrected) return { result: corrected, source: 'rule' };
+    const preferred = applyPreference(snapshot.preferences, input, folders);
+    if (preferred) return { result: preferred, source: 'rule' };
 
     const localResult = classifyWithRules(input, folders);
     if (localResult && localResult.confidence >= settings.confidenceThreshold) {
@@ -106,6 +109,11 @@ export class ClassificationService implements ClassifierPort {
       const corrected = applyCorrection(snapshot.corrections[hostnameKey(input.domain)], input, folders);
       if (corrected) {
         outcomes[index] = { result: { result: corrected, source: 'rule' } };
+        continue;
+      }
+      const preferred = applyPreference(snapshot.preferences, input, folders);
+      if (preferred) {
+        outcomes[index] = { result: { result: preferred, source: 'rule' } };
         continue;
       }
       const localResult = classifyWithRules(input, folders);
@@ -177,7 +185,10 @@ function makeCacheKey(input: ClassificationInput, folders: FolderSummary[], sett
     })).sort(),
   );
   const provider = `${settings.protocol}:${normalizeBaseUrl(settings.baseUrl)}:${settings.model}`;
-  return `${normalizedUrl(input.url)}|${input.title}|${input.domain}|${input.currentFolderId ?? ''}|${input.currentFolder}|${folderFingerprint}|${provider}`;
+  const profileFingerprint = input.pageProfile
+    ? stableFingerprint([input.pageProfile.contentType, input.pageProfile.topics.join('\u001f'), input.pageProfile.summary])
+    : '';
+  return `${normalizedUrl(input.url)}|${input.title}|${input.domain}|${input.currentFolderId ?? ''}|${input.currentFolder}|${folderFingerprint}|${provider}|${profileFingerprint}`;
 }
 
 function resultReferencesFolders(result: ClassificationResult, folders: FolderSummary[]): boolean {
@@ -206,6 +217,35 @@ function applyCorrection(
     targetFolderId: target.id,
     confidence: 0.93,
     reason: `按此前你确认的归类，同站点书签放入 ${target.path}。`,
+  };
+}
+
+function applyPreference(
+  preferences: Record<string, PreferenceRule>,
+  input: ClassificationInput,
+  folders: FolderSummary[],
+): ClassificationResult | null {
+  const profile = input.pageProfile;
+  if (!profile) return null;
+  const topics = new Set(profile.topics.map((topic) => topic.toLocaleLowerCase()));
+  if (topics.size === 0) return null;
+  let best: { score: number; target: FolderSummary; weight: number } | null = null;
+  for (const rule of Object.values(preferences)) {
+    if (rule.weight < 1) continue;
+    if (rule.contentType && profile.contentType && rule.contentType !== profile.contentType) continue;
+    const overlap = rule.topics.filter((topic) => topics.has(topic.toLocaleLowerCase())).length;
+    if (overlap === 0) continue;
+    const target = folders.find((folder) => folder.id === rule.folderId && folder.unmodifiable !== 'managed');
+    if (!target || target.id === input.currentFolderId) continue;
+    const score = overlap + Math.min(rule.weight, 5) * 0.1;
+    if (!best || score > best.score) best = { score, target, weight: rule.weight };
+  }
+  if (!best) return null;
+  return {
+    action: 'move',
+    targetFolderId: best.target.id,
+    confidence: Math.min(0.9, 0.6 + best.weight * 0.05),
+    reason: `按此前同类书签的纠错偏好放入 ${best.target.path}。`,
   };
 }
 
