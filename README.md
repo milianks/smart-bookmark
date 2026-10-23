@@ -7,6 +7,7 @@
 ![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 ![Version](https://img.shields.io/badge/version-0.2.0-blue)
+[![Changelog](https://img.shields.io/badge/changelog-view-blue)](CHANGELOG.md)
 
 配置任意 OpenAI 兼容 API 后，扩展会监听新增书签、读取已有文件夹树、优先复用最接近的目录，并在低置信度或需要新建目录时等待你确认。所有数据保存在本机，不上传整套书签库。
 
@@ -24,6 +25,7 @@
 - [项目结构](#项目结构)
 - [开发与测试](#开发与测试)
 - [持续集成](#持续集成)
+- [变更日志](#变更日志)
 - [贡献](#贡献)
 - [许可证](#许可证)
 
@@ -149,6 +151,10 @@ pnpm build          # 生产构建到 .output/chrome-mv3
 - `.github/workflows/ci.yml`：在 push / pull request 时运行 `typecheck`、`test`、`build`，并上传构建产物。
 - `.github/workflows/release.yml`：推送 `v*` 标签时构建并创建 GitHub Release，附带扩展 zip。
 - `.github/dependabot.yml`：每周检查 npm 与 GitHub Actions 依赖更新。
+
+## 变更日志
+
+各版本变更见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 贡献
 
