@@ -297,3 +297,39 @@ Added account-named Chrome smart bookmark root with default folders and strict r
 ### Next Steps
 
 - Chrome 实机冒烟验证首次安装、未登录命名和真实分类效果。
+
+
+## Session 13: 完成分类缓存失效优化并归档
+<!-- trellis-session: v=2 fp=2859c7a8e2053060 -->
+
+**Date**: 2026-10-28
+**Task**: 完成分类缓存失效优化并归档
+**Branch**: `master`
+
+### Summary
+
+完成严格请求上下文缓存与整批复用，独立检查和旧新版调用量对照通过；已提交并归档。
+
+### Main Changes
+
+- 分类先重新计算纠错、偏好与规则，再按实际请求及凭据代次匹配 AI 缓存；整批保持成员和顺序一致。
+- 补齐旧新版调用量比较、验收记录和运行时规范，保留旧数据与移动前校验。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8f95335` | fix(classifier): 优化分类缓存失效并保持整批上下文一致 |
+
+### Testing
+
+- [OK] pnpm test --run：12 文件、238 项测试通过；pnpm typecheck、pnpm build、git diff --check 通过。
+- [OK] 旧新版 benchmark 通过：无关目录变化省去一次调用；修改批次成员时，新版重分 15 项，旧版仅 1 项。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- Chrome 实机与真实服务商调用尚未验证；本轮未推送远端。
