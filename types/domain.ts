@@ -228,12 +228,26 @@ export interface ActivityRecord {
   toFolderId?: string;
 }
 
-export interface CacheEntry {
-  key: string;
-  result: ClassificationResult;
-  source: 'cache' | 'ai';
-  createdAt: number;
-}
+export const CACHE_RESULT_LIMIT = 200;
+export const CACHE_ENTRY_MAX_BYTES = 64 * 1024;
+
+export const CacheEntrySchema = z.object({
+  key: z.string().regex(/^classification-v2:(single|batch):[0-9a-f]{64}$/),
+  result: ClassificationResultSchema,
+  source: z.literal('ai'),
+  createdAt: z.number().finite().nonnegative(),
+  version: z.literal(2),
+  mode: z.enum(['single', 'batch']),
+  results: z.array(ClassificationResultSchema).min(1).max(CACHE_RESULT_LIMIT),
+}).strict().superRefine((entry, context) => {
+  if (!entry.key.startsWith(`classification-v2:${entry.mode}:`)
+    || (entry.mode === 'single' && entry.results.length !== 1)
+    || JSON.stringify(entry.result) !== JSON.stringify(entry.results[0])) {
+    context.addIssue({ code: 'custom', message: 'Invalid classification cache entry' });
+  }
+});
+
+export type CacheEntry = z.infer<typeof CacheEntrySchema>;
 
 export interface UndoRecord {
   bookmarkId: string;
@@ -263,6 +277,7 @@ export interface PersistedState {
   smartBookmarkRootId?: string;
   smartBookmarkInitialized: boolean;
   settings: Settings;
+  credentialGeneration: number;
   jobs: Record<string, BookmarkJob>;
   reviews: Record<string, ReviewItem>;
   cache: Record<string, CacheEntry>;
@@ -303,12 +318,15 @@ export interface DashboardState {
 export interface ClassifiedResult {
   result: ClassificationResult;
   source: ClassificationSource;
+  /** Transient provider-variant check for cache hits; never persist or expose it. */
+  cacheValidation?: () => boolean;
 }
 
 export const emptyPersistedState = (): PersistedState => ({
   version: 1,
   smartBookmarkInitialized: false,
   settings: { ...DEFAULT_SETTINGS },
+  credentialGeneration: 0,
   jobs: {},
   reviews: {},
   cache: {},

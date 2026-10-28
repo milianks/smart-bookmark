@@ -2,9 +2,9 @@ import { appendActivity, pruneJobs } from './activity-log';
 import { historicalScanSummary, refreshHistoricalScan } from './scan-state';
 import { ProviderError } from '../lib/ai/openai-compatible';
 import { PermissionRequiredError, type BatchOutcome, type ClassifierPort } from './classifier.service';
-import { type BookmarkPort, type BookmarkNode, SMART_ARCHIVE_FOLDER_NAME } from './bookmark.service';
+import { getFoldersWithinRoot, isNodeWithinRoot, type BookmarkPort, type BookmarkNode, SMART_ARCHIVE_FOLDER_NAME } from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
-import { createId, hostnameKey } from '../lib/utils/ids';
+import { createId, hostnameKey, normalizedUrl } from '../lib/utils/ids';
 import type {
   ActivityRecord,
   CorrectionEntry,
@@ -47,6 +47,8 @@ const MAX_RETRIES = 2;
 const MAX_BATCH_CLASSIFICATIONS = 15;
 const IMPORT_STALE_AFTER_MS = 6 * 60 * 60 * 1000;
 
+class StaleCacheVariantError extends Error {}
+
 interface PreparedJob {
   id: string;
   job: BookmarkJob;
@@ -54,6 +56,7 @@ interface PreparedJob {
   folders: FolderSummary[];
   currentFolder: FolderSummary;
   settings: Settings;
+  snapshot: PersistedState;
 }
 
 export class OrganizerService {
@@ -184,7 +187,7 @@ export class OrganizerService {
   }
 
   async resume(): Promise<void> {
-    await this.reconcilePendingOperation();
+    await this.withMutationLock(() => this.reconcilePendingOperation());
     const now = this.now();
     const snapshot = await this.deps.store.load();
     let hasProviderPermission = false;
@@ -200,7 +203,7 @@ export class OrganizerService {
         delete state.importStartedAt;
       }
       for (const job of Object.values(state.jobs)) {
-        if (job.status === 'processing') {
+        if (job.status === 'processing' && !this.inFlight.has(job.bookmark.id)) {
           job.status = 'queued';
           job.updatedAt = now;
         }
@@ -309,7 +312,16 @@ export class OrganizerService {
       if (!target) return;
       if (!(await this.revalidateReviewBeforeMove(item, target.folderId))) return;
       const operation = await this.prepareReviewMove(item, id, target.folderId);
-      if (await this.moveWithRecovery(operation)) return;
+      try {
+        if (await this.moveWithRecovery(operation, item, item)) return;
+      } catch (error) {
+        const latest = await this.deps.bookmarks.getBookmark(item.bookmarkId);
+        if (!latest || latest.parentId !== item.sourceParentId
+          || (latest.title || '(无标题)') !== item.title || latest.url !== item.url) {
+          await this.markReviewStale(item, '书签内容或位置已变化，未执行建议。');
+        }
+        throw error;
+      }
       await this.recordApprovedReview(item, operation, target.name, overrideFolderId);
     });
   }
@@ -322,12 +334,14 @@ export class OrganizerService {
     const bookmark = await this.deps.bookmarks.getBookmark(item.bookmarkId);
     const rootId = await this.getSmartRootId();
     if (!rootId || !bookmark || bookmark.parentId !== item.sourceParentId
+      || (bookmark.title || '(无标题)') !== item.title || bookmark.url !== item.url
       || !(await this.isWithinSmartRoot(bookmark.id, rootId))
         && !(await this.isExternalSourceFolder(bookmark.parentId))
       || !(await this.isValidSourceFolder(item.sourceParentId, rootId))) {
       await this.markReviewStale(item, '书签已被删除或手动移动，未执行建议。');
       throw new Error('书签位置已变化，建议已标记为过期。');
     }
+    await this.validateDuplicateReview(item);
     await this.deps.store.update((current) => {
       const review = current.reviews[id];
       if (review) review.status = 'approving';
@@ -398,12 +412,14 @@ export class OrganizerService {
     const latestBookmark = await this.deps.bookmarks.getBookmark(item.bookmarkId);
     const rootId = await this.getSmartRootId();
     if (!rootId || !latestBookmark || latestBookmark.parentId !== item.sourceParentId
+      || (latestBookmark.title || '(无标题)') !== item.title || latestBookmark.url !== item.url
       || !(await this.isWithinSmartRoot(latestBookmark.id, rootId))
         && !(await this.isExternalSourceFolder(latestBookmark.parentId))
       || !(await this.isValidSourceFolder(item.sourceParentId, rootId))) {
       await this.markReviewStale(item, '书签位置在确认过程中发生变化，未执行移动。');
       throw new Error('书签位置发生变化，未执行移动。');
     }
+    await this.validateDuplicateReview(item);
     if (targetFolderId === item.sourceParentId) {
       await this.closeReview(item, 'approved', '书签已位于推荐文件夹，无需移动。', 'review_approved');
       if (item.scanId) await this.refreshHistoricalScan(item.scanId);
@@ -415,6 +431,20 @@ export class OrganizerService {
       throw new Error('推荐文件夹已不存在或不可修改。');
     }
     return true;
+  }
+
+  private async validateDuplicateReview(item: ReviewItem): Promise<void> {
+    const job = (await this.deps.store.load()).jobs[item.bookmarkId];
+    if (!job) {
+      await this.markReviewStale(item, '审核关联的分类任务不存在，未执行建议。');
+      throw new Error('审核关联的分类任务不存在，建议已标记为过期。');
+    }
+    if (!job.duplicateOf) return;
+    const original = await this.deps.bookmarks.getBookmark(job.duplicateOf);
+    if (original?.url && isHttpUrl(original.url) && isHttpUrl(item.url)
+      && normalizedUrl(original.url) === normalizedUrl(item.url)) return;
+    await this.markReviewStale(item, '重复书签的原件已删除或网址已变化，未执行归档。');
+    throw new Error('重复书签的原件已变化，建议已标记为过期。');
   }
 
   private async prepareReviewMove(item: ReviewItem, id: string, targetFolderId: string): Promise<PendingOperation> {
@@ -471,9 +501,26 @@ export class OrganizerService {
       const item = state.reviews[id];
       if (!item || item.status === 'rejected') return;
       if (item.status === 'approved' || item.status === 'stale') throw new Error('这条建议已经关闭。');
-      await this.closeReview(item, 'rejected', '用户选择保留书签原位。', 'review_rejected');
-      await this.deps.store.update((current) => recordCorrection(current, item.url, { action: 'keep' }, this.now(), item.pageProfile));
-      if (item.scanId) await this.refreshHistoricalScan(item.scanId);
+      const bookmark = await this.deps.bookmarks.getBookmark(item.bookmarkId);
+      if (!bookmark || bookmark.parentId !== item.sourceParentId
+        || (bookmark.title || '(无标题)') !== item.title || bookmark.url !== item.url) {
+        await this.markReviewStale(item, '书签内容或位置已变化，未记录纠错。');
+        throw new Error('书签内容或位置已变化，建议已标记为过期。');
+      }
+      await this.deps.store.update((current) => {
+        const review = current.reviews[item.id];
+        if (!review || review.status === 'rejected') return;
+        if (review.status !== 'pending' && review.status !== 'approving') throw new Error('这条建议已经关闭。');
+        review.status = 'rejected';
+        const job = current.jobs[item.bookmarkId];
+        if (job) job.status = 'completed';
+        appendActivity(current, {
+          kind: 'review_rejected', bookmarkId: item.bookmarkId, title: item.title,
+          url: item.url, message: '用户选择保留书签原位。', source: item.source,
+        }, this.now(), this.makeId);
+        recordCorrection(current, item.url, { action: 'keep' }, this.now(), item.pageProfile);
+        if (item.scanId) refreshHistoricalScan(current, item.scanId, this.now());
+      });
     });
   }
 
@@ -528,13 +575,39 @@ export class OrganizerService {
     this.inFlight.add(id);
     this.activeClassifications += 1;
     try {
-      const prepared = await this.prepareJob(id);
-      if (!prepared) return;
-      const classified = prepared.job.duplicateOf
-        ? await this.classifyDuplicate(prepared.id, prepared.job, prepared.folders, prepared.settings)
-        : await this.classifyViaProvider(prepared.id, prepared.job, prepared.bookmark, prepared.currentFolder, prepared.folders, prepared.settings);
-      if (!classified) return;
-      await this.applyClassification(prepared, classified);
+      while (true) {
+        const prepared = await this.prepareJob(id);
+        if (!prepared) return;
+        let classified: ClassifiedResult | undefined;
+        try {
+          classified = prepared.job.duplicateOf
+            ? await this.classifyDuplicate(prepared.id, prepared.job, prepared.folders, prepared.settings)
+            : await this.classifyViaProvider(prepared.job, prepared.bookmark, prepared.currentFolder, prepared.folders, prepared.settings, prepared.snapshot);
+        } catch (error) {
+          if (!(await this.isClassificationContextCurrent(prepared))) {
+            if (await this.retryStaleClassification(prepared, false)) continue;
+            return;
+          }
+          await this.handleClassifyError(prepared.id, prepared.job, prepared.settings, error);
+          return;
+        }
+        if (!classified) {
+          if (prepared.job.duplicateOf && await this.retryStaleClassification(prepared, false)) continue;
+          return;
+        }
+        if (!(await this.isClassificationContextCurrent(prepared))) {
+          if (await this.retryStaleClassification(prepared, false)) continue;
+          return;
+        }
+        try {
+          assertCacheVariantCurrent(classified);
+          await this.applyClassification(prepared, classified);
+        } catch (error) {
+          if (!(error instanceof StaleCacheVariantError)) throw error;
+          if (await this.retryStaleClassification(prepared, false)) continue;
+        }
+        return;
+      }
     } catch (error) {
       const state = await this.deps.store.load();
       if (state.jobs[id]?.status === 'skipped') return;
@@ -553,65 +626,103 @@ export class OrganizerService {
     if (this.inFlight.has(batchKey)) return;
     this.inFlight.add(batchKey);
     this.activeClassifications += 1;
-    const prepared: PreparedJob[] = [];
+    const lockedIds = ids.filter((id) => !this.inFlight.has(id));
+    let remaining = lockedIds;
+    for (const id of lockedIds) this.inFlight.add(id);
     try {
-      for (const id of ids) {
-        if (this.inFlight.has(id)) continue;
-        this.inFlight.add(id);
-        const item = await this.prepareJob(id);
-        if (item) prepared.push(item);
-        else this.inFlight.delete(id);
-      }
-      for (const item of prepared) {
-        if (!item.job.duplicateOf) continue;
-        const classified = await this.classifyDuplicate(item.id, item.job, item.folders, item.settings);
-        if (classified) await this.applyClassification(item, classified);
-      }
-      const batchPrepared = prepared.filter((item) => !item.job.duplicateOf);
-      if (batchPrepared.length === 0) return;
-      if (!this.deps.classifier.classifyBatch) {
-        for (const item of batchPrepared) {
-          const classified = await this.classifyViaProvider(item.id, item.job, item.bookmark, item.currentFolder, item.folders, item.settings);
-          if (classified) await this.applyClassification(item, classified);
+      while (remaining.length > 0) {
+        const prepared: PreparedJob[] = [];
+        for (const id of remaining) {
+          const item = await this.prepareJob(id, prepared[0]);
+          if (item) prepared.push(item);
         }
-        return;
-      }
-      let outcomes: BatchOutcome[] | undefined;
-      try {
-        const hasPermission = await this.deps.hasProviderPermission(batchPrepared[0]!.settings.baseUrl);
-        outcomes = await this.deps.classifier.classifyBatch(
-          batchPrepared.map((item) => ({
-            title: item.bookmark.title || '(无标题)',
-            url: item.bookmark.url ?? '',
-            domain: new URL(item.bookmark.url ?? '').hostname,
-            currentFolder: item.currentFolder.path,
-            currentFolderId: item.currentFolder.id,
-            ...(item.job.pageProfile ? { pageProfile: toProfileInput(item.job.pageProfile) } : {}),
-          })),
-          batchPrepared[0]!.folders,
-          batchPrepared[0]!.settings,
-          hasPermission,
-        );
-      } catch (error) {
-        for (const item of batchPrepared) await this.handleClassifyError(item.id, item.job, item.settings, error);
-        return;
-      }
-      for (const [index, item] of batchPrepared.entries()) {
-        const outcome = outcomes[index];
-        if (!outcome) continue;
-        if ('error' in outcome) {
-          await this.handleClassifyError(item.id, item.job, item.settings, outcome.error);
+        if (prepared.length === 0) return;
+        if (!(await this.isClassificationContextCurrent(prepared, prepared))) {
+          remaining = await this.retryStaleBatch(prepared);
           continue;
         }
-        try {
-          await this.applyClassification(item, outcome.result);
-        } catch (error) {
-          await this.handleClassifyError(item.id, item.job, item.settings, error);
+
+        const outcomes = new Map<string, BatchOutcome | { error: unknown }>();
+        let duplicateChanged = false;
+        for (const item of prepared) {
+          if (!item.job.duplicateOf) continue;
+          const result = await this.classifyDuplicate(item.id, item.job, item.folders, item.settings);
+          if (result) outcomes.set(item.id, { result });
+          else if ((await this.deps.store.load()).jobs[item.id]?.status === 'processing') duplicateChanged = true;
+        }
+        if (duplicateChanged) {
+          remaining = await this.retryStaleBatch(prepared);
+          continue;
+        }
+        const batch = prepared.filter((item) => !item.job.duplicateOf);
+        if (batch.length > 0 && !this.deps.classifier.classifyBatch) {
+          for (const item of batch) {
+            try {
+              const result = await this.classifyViaProvider(item.job, item.bookmark, item.currentFolder, item.folders, item.settings, item.snapshot);
+              outcomes.set(item.id, { result });
+            } catch (error) {
+              outcomes.set(item.id, { error });
+            }
+          }
+        } else if (batch.length > 0 && this.deps.classifier.classifyBatch) {
+          try {
+            const hasPermission = await this.deps.hasProviderPermission(batch[0]!.settings.baseUrl);
+            const results = await this.deps.classifier.classifyBatch(
+              batch.map((item) => ({
+                title: item.bookmark.title || '(无标题)',
+                url: item.bookmark.url ?? '',
+                domain: new URL(item.bookmark.url ?? '').hostname,
+                currentFolder: item.currentFolder.path,
+                currentFolderId: item.currentFolder.id,
+                ...(item.job.pageProfile ? { pageProfile: toProfileInput(item.job.pageProfile) } : {}),
+              })),
+              batch[0]!.folders,
+              batch[0]!.settings,
+              hasPermission,
+              batch[0]!.snapshot,
+            );
+            for (const [index, item] of batch.entries()) {
+              outcomes.set(item.id, results[index] ?? { error: new ProviderError('AI 批量分类结果不完整，书签保持原位。', false) });
+            }
+          } catch (error) {
+            if (!(await this.isClassificationContextCurrent(prepared, prepared.filter((item) => outcomes.has(item.id) || !item.job.duplicateOf)))) {
+              remaining = await this.retryStaleBatch(prepared);
+              continue;
+            }
+            for (const item of batch) await this.handleClassifyError(item.id, item.job, item.settings, error);
+          }
+        }
+
+        remaining = [];
+        const pending = prepared.filter((item) => outcomes.has(item.id));
+        for (const [index, item] of pending.entries()) {
+          if (!(await this.isClassificationContextCurrent(prepared, pending.slice(index)))) {
+            remaining = await this.retryStaleBatch(pending.slice(index));
+            break;
+          }
+          const outcome = outcomes.get(item.id)!;
+          if ('error' in outcome) {
+            await this.handleClassifyError(item.id, item.job, item.settings, outcome.error);
+            continue;
+          }
+          try {
+            for (const pendingItem of pending.slice(index)) {
+              const pendingOutcome = outcomes.get(pendingItem.id)!;
+              if ('result' in pendingOutcome) assertCacheVariantCurrent(pendingOutcome.result);
+            }
+            await this.applyClassification(item, outcome.result, pending.slice(index).map((pendingItem) => outcomes.get(pendingItem.id)!));
+          } catch (error) {
+            if (error instanceof StaleCacheVariantError) {
+              remaining = await this.retryStaleBatch(pending.slice(index));
+              break;
+            }
+            await this.handleClassifyError(item.id, item.job, item.settings, error);
+          }
         }
       }
     } finally {
       this.inFlight.delete(batchKey);
-      for (const id of ids) this.inFlight.delete(id);
+      for (const id of lockedIds) this.inFlight.delete(id);
       this.activeClassifications -= 1;
       const scanId = (await this.deps.store.load()).jobs[ids[0] ?? '']?.scanId;
       if (scanId) await this.refreshHistoricalScan(scanId);
@@ -619,18 +730,19 @@ export class OrganizerService {
     }
   }
 
-  private async prepareJob(id: string): Promise<PreparedJob | null> {
+  private async prepareJob(id: string, shared?: PreparedJob): Promise<PreparedJob | null> {
     let state = await this.deps.store.load();
     let job = state.jobs[id];
     if (!job || !['queued', 'processing'].includes(job.status)) return null;
     if (job.nextAttemptAt !== undefined && job.nextAttemptAt > this.now()) return null;
-    if (!state.settings.enabled && !job.scanId) return null;
-    if (!state.settings.apiKey.trim()) {
+    if (!state.settings.enabled && !job.scanId && !shared) return null;
+    if (!state.settings.apiKey.trim() && !shared) {
       await this.updateJob(id, (current) => { current.status = 'awaiting_configuration'; });
       return null;
     }
-    const bookmark = await this.deps.bookmarks.getBookmark(id);
-    if (!bookmark) {
+    const liveBookmark = await this.deps.bookmarks.getBookmark(id);
+    const bookmark = liveBookmark ? structuredClone(liveBookmark) : null;
+    if (!bookmark || !bookmark.url || !isHttpUrl(bookmark.url)) {
       await this.failJob(id, '书签已不存在，未执行任何移动。', false);
       return null;
     }
@@ -638,25 +750,31 @@ export class OrganizerService {
       await this.skipJob(id, '书签已被手动移动，已尊重当前目录。');
       return null;
     }
-    const rootId = state.smartBookmarkRootId;
+    const rootId = shared?.snapshot.smartBookmarkRootId ?? state.smartBookmarkRootId;
     if (!rootId || !this.deps.bookmarks.isWithinRoot
       || !(await this.isBookmarkInScope(bookmark, rootId, Boolean(job.externalRoot)))) {
       await this.skipJob(id, '书签不在智能书签目录内，已保留原位。');
       return null;
     }
-    await this.updateJob(id, (current) => { current.status = 'processing'; current.updatedAt = this.now(); });
+    await this.updateJob(id, (current) => {
+      current.status = 'processing';
+      current.updatedAt = this.now();
+      if (current.bookmark.url !== bookmark.url) delete current.pageProfile;
+      current.bookmark = { ...current.bookmark, title: bookmark.title || '(无标题)', url: bookmark.url! };
+    });
     state = await this.deps.store.load();
     job = state.jobs[id];
     if (!job) return null;
-    const latestRootId = state.smartBookmarkRootId;
+    const snapshot = shared?.snapshot ?? state;
+    const latestRootId = snapshot.smartBookmarkRootId;
     if (!latestRootId || !this.deps.bookmarks.isWithinRoot
       || !(await this.isBookmarkInScope(bookmark, latestRootId, Boolean(job.externalRoot)))) {
       await this.skipJob(id, '智能书签目录已变化，书签保留原位。');
       return null;
     }
-    const folders = await this.getFoldersWithinSmartRoot(latestRootId);
+    const folders = shared?.folders ?? await this.getFoldersWithinSmartRoot(latestRootId);
     if (!folders) {
-      await this.failJob(id, '智能书签目录结构不可用，书签保持原位。', false, state.settings);
+      await this.failJob(id, '智能书签目录结构不可用，书签保持原位。', false, snapshot.settings);
       return null;
     }
     let currentFolder = folders.find((folder) => folder.id === bookmark.parentId);
@@ -670,16 +788,107 @@ export class OrganizerService {
       await this.failJob(id, '当前文件夹已不存在，书签保持原位。', false);
       return null;
     }
-    return { id, job, bookmark, folders, currentFolder, settings: state.settings };
+    return { id, job, bookmark: structuredClone(bookmark), folders, currentFolder, settings: snapshot.settings, snapshot };
   }
 
-  private async applyClassification(prepared: PreparedJob, classified: ClassifiedResult): Promise<void> {
+  private async isClassificationContextCurrent(context: PreparedJob | PreparedJob[], jobs: PreparedJob[] = Array.isArray(context) ? context : [context]): Promise<boolean> {
+    const prepared = Array.isArray(context) ? context[0] : context;
+    if (!prepared) return false;
+    const snapshot = prepared.snapshot;
+    const current = await this.deps.store.load();
+    if (!snapshot.smartBookmarkRootId || current.smartBookmarkRootId !== snapshot.smartBookmarkRootId
+      || JSON.stringify([current.settings, current.corrections, current.preferences, current.credentialGeneration])
+        !== JSON.stringify([snapshot.settings, snapshot.corrections, snapshot.preferences, snapshot.credentialGeneration])) return false;
+    let tree: BookmarkNode[];
+    try {
+      tree = await this.deps.bookmarks.getTree();
+    } catch {
+      return false;
+    }
+    const latest = await this.deps.store.load();
+    if (latest.smartBookmarkRootId !== snapshot.smartBookmarkRootId
+      || JSON.stringify([latest.settings, latest.corrections, latest.preferences, latest.credentialGeneration])
+        !== JSON.stringify([snapshot.settings, snapshot.corrections, snapshot.preferences, snapshot.credentialGeneration])) return false;
+    const folders = getFoldersWithinRoot(tree, snapshot.smartBookmarkRootId);
+    if (JSON.stringify(folders) !== JSON.stringify(prepared.folders)) return false;
+    const allItems = Array.isArray(context) ? context : [context];
+    for (const item of allItems) {
+      const job = latest.jobs[item.id];
+      const bookmark = findNode(tree, item.id);
+      if (!job || (jobs.includes(item) && job.status !== 'processing')
+        || JSON.stringify([job.bookmark, job.pageProfile, job.duplicateOf, job.externalRoot])
+          !== JSON.stringify([item.job.bookmark, item.job.pageProfile, item.job.duplicateOf, item.job.externalRoot])
+        || !bookmark || bookmark.parentId !== item.bookmark.parentId
+        || bookmark.title !== item.bookmark.title || bookmark.url !== item.bookmark.url) return false;
+      if (!isNodeWithinRoot(tree, item.id, snapshot.smartBookmarkRootId)) {
+        const parent = findNode(tree, bookmark.parentId ?? '');
+        if (!job.externalRoot || !parent || parent.title !== item.currentFolder.name
+          || !['bookmarks-bar', 'other', 'mobile'].includes(parent.folderType ?? '')
+          || parent.unmodifiable === 'managed') return false;
+      }
+      if (job.duplicateOf) {
+        const original = findNode(tree, job.duplicateOf);
+        if (!bookmark.url || !isHttpUrl(bookmark.url) || !original?.url || !isHttpUrl(original.url)
+          || normalizedUrl(bookmark.url) !== normalizedUrl(original.url)) {
+          await this.deps.store.update((state) => {
+            if (state.jobs[item.id]?.duplicateOf === job.duplicateOf) delete state.jobs[item.id]!.duplicateOf;
+          });
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  private async retryStaleBatch(prepared: PreparedJob[]): Promise<string[]> {
+    const remaining: string[] = [];
+    for (const item of prepared) {
+      if (await this.retryStaleClassification(item, true)) remaining.push(item.id);
+    }
+    return remaining;
+  }
+
+  private async retryStaleClassification(prepared: PreparedJob, batch: boolean): Promise<boolean> {
+    const state = await this.deps.store.load();
+    const job = state.jobs[prepared.id];
+    if (!job || job.status !== 'processing') return false;
+    if (!state.settings.apiKey.trim()) {
+      await this.updateJob(prepared.id, (current) => { current.status = 'awaiting_configuration'; });
+      return false;
+    }
+    if (!state.settings.enabled && !job.scanId) {
+      await this.skipJob(prepared.id, '自动整理已关闭，书签保留原位。');
+      return false;
+    }
+    if (job.attempts >= MAX_RETRIES) {
+      await this.failJob(prepared.id, '分类期间目录或设置发生变化，已停止重试并保留书签原位。', false, state.settings);
+      return false;
+    }
+    await this.updateJob(prepared.id, (current) => {
+      current.status = batch ? 'processing' : 'queued';
+      current.attempts += 1;
+      current.updatedAt = this.now();
+      delete current.nextAttemptAt;
+      delete current.lastError;
+    });
+    return true;
+  }
+
+  private async applyClassification(
+    prepared: PreparedJob,
+    classified: ClassifiedResult,
+    batchOutcomes?: Array<BatchOutcome | { error: unknown }>,
+  ): Promise<void> {
     const { id, job, folders, settings } = prepared;
     if (!validResultTargets(classified, folders)) {
       await this.failJob(id, '分类建议中的文件夹已不存在，书签保持原位。', false, settings);
       return;
     }
     await this.updateJob(id, (current) => {
+      assertCacheVariantCurrent(classified);
+      for (const outcome of batchOutcomes ?? []) {
+        if ('result' in outcome) assertCacheVariantCurrent(outcome.result);
+      }
       current.classification = classified.result;
       current.classificationSource = classified.source;
       current.updatedAt = this.now();
@@ -710,27 +919,22 @@ export class OrganizerService {
   }
 
   private async classifyViaProvider(
-    id: string,
     job: BookmarkJob,
     bookmark: BookmarkNode,
     currentFolder: FolderSummary,
     folders: FolderSummary[],
     settings: Settings,
-  ): Promise<ClassifiedResult | undefined> {
-    try {
-      const hasPermission = await this.deps.hasProviderPermission(settings.baseUrl);
-      return await this.deps.classifier.classify({
-        title: bookmark.title || '(无标题)',
-        url: bookmark.url ?? '',
-        domain: new URL(bookmark.url ?? '').hostname,
-        currentFolder: currentFolder.path,
-        currentFolderId: currentFolder.id,
-        ...(job.pageProfile ? { pageProfile: toProfileInput(job.pageProfile) } : {}),
-      }, folders, settings, hasPermission);
-    } catch (error) {
-      await this.handleClassifyError(id, job, settings, error);
-      return undefined;
-    }
+    snapshot: PersistedState,
+  ): Promise<ClassifiedResult> {
+    const hasPermission = await this.deps.hasProviderPermission(settings.baseUrl);
+    return this.deps.classifier.classify({
+      title: bookmark.title || '(无标题)',
+      url: bookmark.url ?? '',
+      domain: new URL(bookmark.url ?? '').hostname,
+      currentFolder: currentFolder.path,
+      currentFolderId: currentFolder.id,
+      ...(job.pageProfile ? { pageProfile: toProfileInput(job.pageProfile) } : {}),
+    }, folders, settings, hasPermission, snapshot);
   }
 
   private async handleClassifyError(id: string, job: BookmarkJob, settings: Settings, error: unknown): Promise<void> {
@@ -767,13 +971,20 @@ export class OrganizerService {
     folders: FolderSummary[],
     settings: Settings,
   ): Promise<ClassifiedResult | undefined> {
+    const bookmark = await this.deps.bookmarks.getBookmark(id);
+    const original = await this.deps.bookmarks.getBookmark(job.duplicateOf!);
+    if (!bookmark?.url || !isHttpUrl(bookmark.url) || !original?.url || !isHttpUrl(original.url)
+      || normalizedUrl(bookmark.url) !== normalizedUrl(original.url)) {
+      await this.updateJob(id, (current) => { delete current.duplicateOf; });
+      return undefined;
+    }
     const archive = folders.find((folder) =>
       folder.name === SMART_ARCHIVE_FOLDER_NAME && folder.unmodifiable !== 'managed');
     if (!archive) {
       await this.failJob(id, '未找到“🗄️ 归档”目录，重复书签保持原位。', false, settings);
       return undefined;
     }
-    const keptTitle = (await this.deps.bookmarks.getBookmark(job.duplicateOf!))?.title.trim();
+    const keptTitle = original.title.trim();
     return {
       result: {
         action: 'move', targetFolderId: archive.id, confidence: 1,
@@ -879,12 +1090,22 @@ export class OrganizerService {
         }, source, await this.getFoldersWithinSmartRoot(latestRootId) ?? [], latestState.settings);
         return;
       }
-      if (await this.moveWithRecovery(operation)) {
-        const recoveredSettings = (await this.deps.store.load()).settings;
-        if (recoveredSettings.notificationsEnabled && recoveredSettings.successNotifications) {
-          await this.deps.notifications.moved(job.bookmark.id, job.bookmark.title);
+      try {
+        if (await this.moveWithRecovery(operation, job.bookmark)) {
+          const recoveredSettings = (await this.deps.store.load()).settings;
+          if (recoveredSettings.notificationsEnabled && recoveredSettings.successNotifications) {
+            await this.deps.notifications.moved(job.bookmark.id, job.bookmark.title);
+          }
+          return;
         }
-        return;
+      } catch (error) {
+        const latest = await this.deps.bookmarks.getBookmark(job.bookmark.id);
+        if (!latest || latest.parentId !== job.bookmark.parentId
+          || (latest.title || '(无标题)') !== job.bookmark.title || latest.url !== job.bookmark.url) {
+          await this.skipJob(job.bookmark.id, '书签内容或位置已变化，未执行移动。');
+          return;
+        }
+        throw error;
       }
       await this.deps.store.update((current) => {
         current.pendingOperation = undefined;
@@ -1011,7 +1232,7 @@ export class OrganizerService {
    * the durable intent immediately so this worker does not block later mutations.
    * Returns true when reconciliation finalized the operation.
    */
-  private async moveWithRecovery(operation: PendingOperation): Promise<boolean> {
+  private async moveWithRecovery(operation: PendingOperation, expected?: { title: string; url: string }, review?: ReviewItem): Promise<boolean> {
     try {
       const rootId = await this.getSmartRootId();
       if (!rootId || !this.deps.bookmarks.isValidTargetFolder) {
@@ -1031,6 +1252,14 @@ export class OrganizerService {
         || !(await this.isBookmarkInScope(bookmark, rootId, Boolean(operation.externalSource)))
           && !(await this.isExternalSourceFolder(bookmark.parentId))) {
         throw new Error('书签位置已变化，未执行移动。');
+      }
+      if (review) await this.validateDuplicateReview(review);
+      if (expected) {
+        const latest = await this.deps.bookmarks.getBookmark(operation.bookmarkId);
+        if (!latest || latest.parentId !== operation.fromFolderId
+          || (latest.title || '(无标题)') !== expected.title || latest.url !== expected.url) {
+          throw new Error('书签内容已变化，未执行移动。');
+        }
       }
       await this.deps.bookmarks.moveBookmark(operation.bookmarkId, operation.toFolderId);
       return false;
@@ -1072,6 +1301,7 @@ export class OrganizerService {
         kind: 'skipped', bookmarkId: item.bookmarkId, title: item.title, url: item.url,
         message, source: item.source,
       }, this.now(), this.makeId);
+      if (item.scanId) refreshHistoricalScan(state, item.scanId, this.now());
     });
   }
 
@@ -1308,6 +1538,16 @@ function removeUndoRecord(state: PersistedState, bookmarkId: string, originalToF
   state.undoStack = state.undoStack.filter((entry) =>
     !(entry.bookmarkId === bookmarkId && entry.toFolderId === originalToFolderId));
   state.lastUndo = state.undoStack[state.undoStack.length - 1];
+}
+
+function assertCacheVariantCurrent(classified: ClassifiedResult): void {
+  if (classified.source !== 'cache' || !classified.cacheValidation) return;
+  try {
+    if (classified.cacheValidation() === true) return;
+  } catch {
+    // An unverifiable provider variant must not be committed.
+  }
+  throw new StaleCacheVariantError();
 }
 
 function validResultTargets(classified: ClassifiedResult, folders: FolderSummary[]): boolean {

@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, emptyPersistedState, type FolderSummary } from '../types/domain';
+import { stableFingerprint } from '../lib/utils/ids';
 import { MemoryStateRepository } from '../lib/storage/repository';
 import { ClassificationService, PermissionRequiredError } from '../services/classifier.service';
+import { SettingsService } from '../services/settings.service';
 import type { ClassifierProvider } from '../lib/ai/openai-compatible';
+import type { ProviderConfig } from '../lib/ai/provider-config';
+import { buildBatchMessages, buildClassificationMessages, type ClassificationInput, type RecentCorrection } from '../lib/ai/prompts';
 import { classifyWithRules, rankFolderCandidates } from '../lib/ai/rule-classifier';
 
 const folders: FolderSummary[] = [
@@ -105,6 +109,7 @@ describe('ClassificationService', () => {
         expect.objectContaining({ domain: 'github.com', action: 'move', folderPath: expect.stringContaining('Development') }),
         expect.objectContaining({ domain: 'medium.com', action: 'keep' }),
       ],
+      expect.any(Function),
     );
   });
 
@@ -381,11 +386,395 @@ describe('ClassificationService', () => {
     expect(results?.[1]).toMatchObject({ result: { result: { action: 'keep' } } });
   });
 });
+describe('classification cache safety', () => {
+  const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key' };
+  const input: ClassificationInput = { title: 'Unusual page', url: 'https://example.com/random#one', domain: 'example.com', currentFolder: 'Bookmarks bar', currentFolderId: 'bar' };
+
+  it('applies corrections, preferences and threshold rules before cache lookup', async () => {
+    const store = new MemoryStateRepository();
+    const provider = createProvider();
+    const service = new ClassificationService(provider, store);
+    const profiled = { ...input, pageProfile: { summary: 'private derived summary', topics: ['topic-x'], contentType: 'article' } };
+    expect((await service.classify(profiled, folders, settings, true)).source).toBe('ai');
+    await store.update((state) => { state.preferences.x = { key: 'x', topics: ['topic-x'], contentType: 'article', folderId: 'research', weight: 2, count: 2, createdAt: 1, updatedAt: 1 }; });
+    expect(await service.classify(profiled, folders, settings, false)).toMatchObject({ source: 'rule', result: { targetFolderId: 'research' } });
+    await store.update((state) => { state.corrections['example.com'] = { domain: 'example.com', action: 'keep', createdAt: 2 }; });
+    expect(await service.classify(profiled, folders, settings, false)).toMatchObject({ source: 'rule', result: { action: 'keep' } });
+    expect(provider.classify).toHaveBeenCalledOnce();
+
+    const matched = { title: 'GitHub programming developer repository', url: 'https://github.com/repo', domain: 'github.com', currentFolder: 'Bookmarks bar', currentFolderId: 'bar' };
+    expect((await service.classify(matched, folders, { ...settings, confidenceThreshold: 1 }, true)).source).toBe('ai');
+    expect((await service.classify(matched, folders, { ...settings, confidenceThreshold: 0.85 }, false)).source).toBe('rule');
+  });
+
+  it('uses the original URL, ordered candidates, parent and recent correction paths in the identity', async () => {
+    const store = new MemoryStateRepository();
+    const provider = createProvider();
+    const service = new ClassificationService(provider, store);
+    await store.update((state) => { state.corrections['another.test'] = { domain: 'another.test', action: 'move', folderId: 'research', createdAt: 1 }; });
+    await service.classify(input, folders, settings, true);
+    expect((await service.classify(input, folders, settings, false)).source).toBe('cache');
+    await service.classify({ ...input, url: 'https://example.com/random#two' }, folders, settings, true);
+    await service.classify(input, [...folders].reverse(), settings, true);
+    await service.classify(input, folders.map((folder) => folder.id === 'research' ? { ...folder, parentId: 'different' } : folder), settings, true);
+    await service.classify(input, folders.map((folder) => folder.id === 'research' ? { ...folder, path: 'changed path' } : folder), settings, true);
+    expect(provider.classify).toHaveBeenCalledTimes(5);
+  });
+
+  it('reuses only an entire ordered AI batch and preserves mixed local positions', async () => {
+    const provider = createProvider();
+    const service = new ClassificationService(provider, new MemoryStateRepository());
+    const local = { title: 'GitHub programming developer repository', url: 'https://github.com/repo', domain: 'github.com', currentFolder: 'Bookmarks bar', currentFolderId: 'bar' };
+    const other = { ...input, url: 'https://other.example/other', domain: 'other.example' };
+    const first = await service.classifyBatch([input, local, other], folders, settings, true);
+    expect(first.map((outcome) => 'result' in outcome ? outcome.result.source : 'error')).toEqual(['ai', 'rule', 'ai']);
+    const second = await service.classifyBatch([input, local, other], folders, settings, false);
+    expect(second.map((outcome) => 'result' in outcome ? outcome.result.source : 'error')).toEqual(['cache', 'rule', 'cache']);
+    expect(vi.mocked(provider.classifyBatch!).mock.calls[0]?.[0]).toEqual([input, other]);
+    await expect(service.classifyBatch([input, local, { ...other, url: 'https://other.example/new' }], folders, settings, false)).rejects.toBeInstanceOf(PermissionRequiredError);
+    await service.classifyBatch([other, local, input], folders, settings, true);
+    await service.classifyBatch([input, local, { ...other, url: 'https://other.example/new' }], folders, settings, true);
+    expect(provider.classifyBatch).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(provider.classifyBatch!).mock.calls.map((call) => call[0].length)).toEqual([2, 2, 2]);
+    await service.classify(input, folders, settings, true);
+    expect(provider.classify).toHaveBeenCalledOnce();
+  });
+
+  it.each(['single', 'batch'] as const)('retries to the last bounded %s cache variant and preserves whole-batch ordering', async (mode) => {
+    const store = new MemoryStateRepository();
+    const provider = createProvider();
+    const originalRequest = provider.getCacheRequest!;
+    let generation = 0;
+    provider.getCacheRequest = (...args) => ({ ...originalRequest(...args), generation });
+    provider.classify = vi.fn(async (item, candidates, config, corrections, callback) => {
+      callback?.(provider.getCacheRequest!('single', [item], candidates, config, corrections)!);
+      return { action: 'keep' as const, confidence: 0.4, reason: `variant-${generation}` };
+    });
+    provider.classifyBatch = vi.fn(async (items, candidates, config, corrections, callback) => {
+      callback?.(provider.getCacheRequest!('batch', items, candidates, config, corrections)!);
+      return items.map((_: ClassificationInput, index: number) => ({ action: 'keep' as const, confidence: 0.4, reason: `variant-${generation}-${index}` }));
+    });
+    const service = new ClassificationService(provider, store);
+    const inputs = [input, { ...input, url: 'https://example.com/other' }];
+    const classify = (permission: boolean) => mode === 'single'
+      ? service.classify(input, folders, settings, permission)
+      : service.classifyBatch(inputs, folders, settings, permission);
+    for (generation = 0; generation < 3; generation += 1) await classify(true);
+    expect(Object.keys((await store.load()).cache)).toHaveLength(3);
+    generation = 0;
+    const subtle = globalThis.crypto.subtle;
+    const originalSign = subtle.sign.bind(subtle);
+    const sign = vi.spyOn(subtle, 'sign').mockImplementation(async (...args) => {
+      const digest = await originalSign(...args);
+      if (generation < 2) generation += 1;
+      return digest;
+    });
+    try {
+      const result = await classify(false);
+      expect(sign).toHaveBeenCalledTimes(3);
+      if (Array.isArray(result)) {
+        expect(result.map((item) => 'result' in item && [item.result.source, item.result.result.reason]))
+          .toEqual([['cache', 'variant-2-0'], ['cache', 'variant-2-1']]);
+      } else {
+        expect(result).toMatchObject({ source: 'cache', result: { reason: 'variant-2' } });
+      }
+      expect(mode === 'single' ? provider.classify : provider.classifyBatch).toHaveBeenCalledTimes(3);
+    } finally {
+      sign.mockRestore();
+    }
+  });
+
+  it.each(['single', 'batch'] as const)('bounds retries when the %s provider variant keeps changing', async (mode) => {
+    const store = new MemoryStateRepository();
+    const provider = createProvider();
+    const service = new ClassificationService(provider, store);
+    const inputs = [input, { ...input, url: 'https://example.com/other' }];
+    if (mode === 'single') await service.classify(input, folders, settings, true);
+    else await service.classifyBatch(inputs, folders, settings, true);
+    const originalRequest = provider.getCacheRequest!;
+    let generation = 0;
+    provider.getCacheRequest = (...args) => ({ ...originalRequest(...args), generation });
+    const subtle = globalThis.crypto.subtle;
+    const originalSign = subtle.sign.bind(subtle);
+    const sign = vi.spyOn(subtle, 'sign').mockImplementation(async (...args) => {
+      const digest = await originalSign(...args);
+      generation += 1;
+      return digest;
+    });
+    try {
+      const classify = (permission: boolean) => mode === 'single'
+        ? service.classify(input, folders, settings, permission)
+        : service.classifyBatch(inputs, folders, settings, permission);
+      const callCount = mode === 'single' ? vi.mocked(provider.classify).mock.calls.length : vi.mocked(provider.classifyBatch!).mock.calls.length;
+      await expect(classify(false)).rejects.toBeInstanceOf(PermissionRequiredError);
+      expect(sign).toHaveBeenCalledTimes(3);
+      expect(mode === 'single' ? vi.mocked(provider.classify).mock.calls.length : vi.mocked(provider.classifyBatch!).mock.calls.length).toBe(callCount);
+      const after = await classify(true);
+      expect(sign).toHaveBeenCalledTimes(6);
+      if (Array.isArray(after)) {
+        expect(after.map((item) => 'result' in item && item.result.source)).toEqual(['ai', 'ai']);
+      } else {
+        expect(after.source).toBe('ai');
+      }
+      expect(mode === 'single' ? vi.mocked(provider.classify).mock.calls.length : vi.mocked(provider.classifyBatch!).mock.calls.length).toBe(callCount + 1);
+    } finally {
+      sign.mockRestore();
+    }
+  });
+
+  it.each(['single', 'batch'] as const)('does not reuse cache if the %s provider cannot expose a stable variant token', async (mode) => {
+    const store = new MemoryStateRepository();
+    const provider = createProvider();
+    const service = new ClassificationService(provider, store);
+    const inputs = [input, { ...input, url: 'https://example.com/other' }];
+    const classify = (permission: boolean) => mode === 'single'
+      ? service.classify(input, folders, settings, permission)
+      : service.classifyBatch(inputs, folders, settings, permission);
+    await classify(true);
+    expect(Object.keys((await store.load()).cache)).toHaveLength(1);
+    provider.getCacheVariant = () => undefined;
+    await expect(classify(false)).rejects.toBeInstanceOf(PermissionRequiredError);
+    delete provider.getCacheVariant;
+    await expect(classify(false)).rejects.toBeInstanceOf(PermissionRequiredError);
+    await classify(true);
+    expect(Object.keys((await store.load()).cache)).toHaveLength(1);
+    expect(mode === 'single' ? provider.classify : provider.classifyBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('never reuses an earlier variant token after a provider changes away and back', async () => {
+    const provider = createProvider();
+    let variant = 0;
+    let useFallback = false;
+    const request = provider.getCacheRequest!;
+    provider.getCacheVariant = () => variant;
+    provider.getCacheRequest = (...args) => ({ ...request(...args), useFallback });
+    provider.classify = vi.fn(async (item, candidates, config, corrections, callback) => {
+      callback?.(provider.getCacheRequest!('single', [item], candidates, config, corrections)!);
+      return { action: 'keep' as const, confidence: 0.4, reason: 'valid' };
+    });
+    const service = new ClassificationService(provider, new MemoryStateRepository());
+    await service.classify(input, folders, settings, true);
+    const oldHit = await service.classify(input, folders, settings, false);
+    expect(oldHit.cacheValidation?.()).toBe(true);
+    useFallback = true;
+    variant += 1;
+    expect(oldHit.cacheValidation?.()).toBe(false);
+    useFallback = false;
+    variant += 1;
+    expect(oldHit.cacheValidation?.()).toBe(false);
+    const newHit = await service.classify(input, folders, settings, false);
+    expect(newHit.cacheValidation?.()).toBe(true);
+    expect(oldHit.cacheValidation?.()).toBe(false);
+  });
+
+  it('fails closed if a cached result can no longer read its provider variant', async () => {
+    const provider = createProvider();
+    const service = new ClassificationService(provider, new MemoryStateRepository());
+    await service.classify(input, folders, settings, true);
+    const cached = await service.classify(input, folders, settings, false);
+    expect(cached.cacheValidation?.()).toBe(true);
+    provider.getCacheVariant = () => { throw new Error('provider unavailable'); };
+    expect(cached.cacheValidation?.()).toBe(false);
+  });
+
+  it('rejects invalid and incomplete batches without persisting partial results', async () => {
+    const store = new MemoryStateRepository();
+    const provider = createProvider();
+    provider.classifyBatch = vi.fn(async () => [
+      { action: 'move' as const, targetFolderId: 'ghost', confidence: 0.9, reason: 'invalid' },
+      { action: 'keep' as const, confidence: 0.4, reason: 'valid' },
+    ]);
+    const service = new ClassificationService(provider, store);
+    const inputs = [input, { ...input, url: 'https://example.com/second' }];
+    const snapshot = await store.load();
+    const request = provider.getCacheRequest!('batch', inputs, folders, { protocol: settings.protocol, baseUrl: settings.baseUrl, model: settings.model, apiKey: settings.apiKey }, []);
+    const callbackProvider = provider.classifyBatch;
+    provider.classifyBatch = async (...args) => {
+      if (request) args[4]?.(request);
+      return callbackProvider!(...args);
+    };
+    const outcomes = await service.classifyBatch(inputs, folders, settings, true, snapshot);
+    expect(outcomes[0]).toHaveProperty('error');
+    expect(outcomes[1]).toHaveProperty('result');
+    expect((await store.load()).cache).toEqual({});
+    provider.classifyBatch = vi.fn(async () => [{ action: 'keep' as const, confidence: 0.4, reason: 'only one' }]);
+    await expect(service.classifyBatch(inputs, folders, settings, true)).rejects.toThrow('缺少');
+    expect((await store.load()).cache).toEqual({});
+  });
+
+  it('rejects cached deleted/managed targets, malformed entries and unknown provider variants', async () => {
+    const store = new MemoryStateRepository();
+    const provider = createProvider();
+    const request = provider.getCacheRequest!;
+    provider.classify = vi.fn(async (item, candidates, config, corrections, callback) => {
+      callback?.(request('single', [item], candidates, config, corrections));
+      return { action: 'move' as const, targetFolderId: 'research', confidence: 0.9, reason: 'target' };
+    });
+    const service = new ClassificationService(provider, store);
+    await service.classify(input, folders, settings, true);
+    const badFolders = folders.map((folder) => folder.id === 'research' ? { ...folder, unmodifiable: 'managed' } : folder);
+    await expect(service.classify(input, badFolders, settings, true)).rejects.toThrow('不存在');
+    await store.update((state) => {
+      const key = Object.keys(state.cache)[0]!;
+      const invalid = { action: 'move' as const, targetFolderId: 'deleted', confidence: 0.9, reason: 'deleted target' };
+      state.cache[key]!.result = invalid;
+      state.cache[key]!.results = [invalid];
+    });
+    await service.classify(input, folders, settings, true);
+    await store.update((state) => {
+      const key = Object.keys(state.cache)[0]!;
+      (state.cache[key] as unknown as Record<string, unknown>).results = [{ action: 'keep', confidence: 99, reason: 'bad' }];
+    });
+    await service.classify(input, folders, settings, true);
+    expect(provider.classify).toHaveBeenCalledTimes(4);
+    delete provider.getCacheRequest;
+    await service.classify(input, folders, settings, true);
+    await service.classify(input, folders, settings, true);
+    expect(provider.classify).toHaveBeenCalledTimes(6);
+  });
+
+  it('does not reuse a whole batch if one stored member has a deleted destination', async () => {
+    const store = new MemoryStateRepository();
+    const provider = createProvider();
+    const service = new ClassificationService(provider, store);
+    const inputs = [input, { ...input, url: 'https://example.com/second' }];
+    await service.classifyBatch(inputs, folders, settings, true);
+    await store.update((state) => {
+      const entry = Object.values(state.cache)[0]!;
+      entry.results[1] = { action: 'move', targetFolderId: 'deleted', confidence: 0.9, reason: 'deleted' };
+    });
+    expect((await service.classifyBatch(inputs, folders, settings, true)).map((outcome) => 'result' in outcome && outcome.result.source)).toEqual(['ai', 'ai']);
+    expect(provider.classifyBatch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(provider.classifyBatch!).mock.calls[1]?.[0]).toEqual(inputs);
+  });
+
+  it('invalidates when a recent correction target path changes outside the provider candidate set', async () => {
+    const fatSample = (id: string) => ({ title: 'x'.repeat(400), url: `https://${id}.test/${'y'.repeat(400)}`, hostname: `${id}.test` });
+    const many: FolderSummary[] = [
+      { id: 'current', name: '待分类', path: '智能书签 / 待分类' },
+      { id: 'react', name: 'React', path: '智能书签 / 开发 / React' },
+      ...Array.from({ length: 24 }, (_, index) => ({ id: `bulk-${index}`, name: `bulk ${index}`, path: `智能书签 / bulk ${index}`, samples: [fatSample(`bulk${index}`), fatSample(`bx${index}`), fatSample(`by${index}`)] })),
+    ];
+    const request = { title: 'Hooks guide', url: 'https://example.com/react/hooks', domain: 'example.com', currentFolder: '智能书签 / 待分类', currentFolderId: 'current' };
+    const candidates = rankFolderCandidates(request, many);
+    const excluded = many.find((folder) => !candidates.some((candidate) => candidate.id === folder.id))!;
+    expect(excluded).toBeDefined();
+    const changed = many.map((folder) => folder.id === excluded.id ? { ...folder, path: `${folder.path} / renamed` } : folder);
+    expect(rankFolderCandidates(request, changed)).toEqual(candidates);
+    expect(classifyWithRules(request, changed)).toEqual(classifyWithRules(request, many));
+    const store = new MemoryStateRepository();
+    await store.update((state) => { state.corrections['other.example'] = { domain: 'other.example', action: 'move', folderId: excluded.id, createdAt: 1 }; });
+    const provider = createProvider();
+    const service = new ClassificationService(provider, store);
+    const strictSettings = { ...settings, confidenceThreshold: 1 };
+    expect((await service.classify(request, many, strictSettings, true)).source).toBe('ai');
+    expect((await service.classify(request, many, strictSettings, false)).source).toBe('cache');
+    expect((await service.classify(request, changed, strictSettings, true)).source).toBe('ai');
+    const calls = vi.mocked(provider.classify).mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.[1]).toEqual(calls[1]?.[1]);
+    expect(calls[0]?.[3]).toEqual([{ domain: 'other.example', action: 'move', folderPath: excluded.path }]);
+    expect(calls[1]?.[3]).toEqual([{ domain: 'other.example', action: 'move', folderPath: `${excluded.path} / renamed` }]);
+  });
+
+  it('keeps over-budget irrelevant-folder changes warm while the old full-tree fingerprint changes', async () => {
+    const fatSample = (id: string) => ({ title: 'x'.repeat(400), url: `https://${id}.test/${'y'.repeat(400)}`, hostname: `${id}.test` });
+    const many: FolderSummary[] = [
+      { id: 'current', name: '待分类', path: '智能书签 / 待分类' },
+      { id: 'react', name: 'React', path: '智能书签 / 开发 / React' },
+      ...Array.from({ length: 24 }, (_, index) => ({ id: `bulk-${index}`, name: `bulk ${index}`, path: `智能书签 / bulk ${index}`, samples: [fatSample(`bulk${index}`), fatSample(`bx${index}`), fatSample(`by${index}`)] })),
+    ];
+    const request = { title: 'Hooks guide', url: 'https://example.com/react/hooks', domain: 'example.com', currentFolder: '智能书签 / 待分类', currentFolderId: 'current' };
+    const strictSettings = { ...settings, confidenceThreshold: 1 };
+    const beforeCandidates = rankFolderCandidates(request, many);
+    const excluded = many.find((folder) => !beforeCandidates.some((candidate) => candidate.id === folder.id))!;
+    expect(excluded).toBeDefined();
+    const changed = many.map((folder) => folder.id === excluded.id ? { ...folder, samples: folder.samples?.map((sample) => ({ ...sample, title: `${sample.title}z` })) } : folder);
+    expect(classifyWithRules(request, many)).toEqual(classifyWithRules(request, changed));
+    expect(rankFolderCandidates(request, changed)).toEqual(beforeCandidates);
+    const oldFingerprint = (value: FolderSummary[]) => stableFingerprint(value.map((folder) => JSON.stringify({ id: folder.id, name: folder.name, path: folder.path, folderType: folder.folderType ?? '', unmodifiable: folder.unmodifiable ?? '', samples: (folder.samples ?? []).slice(0, 3) })).sort());
+    expect(oldFingerprint(changed)).not.toBe(oldFingerprint(many));
+    const provider = createProvider();
+    const service = new ClassificationService(provider, new MemoryStateRepository());
+    expect((await service.classify(request, many, strictSettings, true)).source).toBe('ai');
+    expect((await service.classify(request, changed, strictSettings, false)).source).toBe('cache');
+    expect(provider.classify).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not persist request bodies, key material or derived profile contents', async () => {
+    const store = new MemoryStateRepository();
+    const service = new ClassificationService(createProvider(), store);
+    await service.classify({ ...input, pageProfile: { summary: 'private-derived-profile', topics: ['profile-topic'], contentType: 'article' } }, folders, settings, true);
+    const json = JSON.stringify((await store.load()).cache);
+    expect(json).not.toContain('test-key');
+    expect(json).not.toContain('private-derived-profile');
+    expect(json).not.toContain(input.url);
+  });
+
+  it('blocks reuse after A→B→A and skips cache writes for in-flight credential changes', async () => {
+    const initial = emptyPersistedState();
+    initial.settings.apiKey = 'A';
+    const store = new MemoryStateRepository(initial);
+    const provider = createProvider();
+    const service = new ClassificationService(provider, store);
+    const settingsService = new SettingsService({ store, classifier: service, hasProviderPermission: async () => true, afterUpdate: async () => {} });
+    await service.classify(input, folders, initial.settings, true);
+    expect((await service.classify(input, folders, initial.settings, false)).source).toBe('cache');
+    await settingsService.updateSettings({ apiKey: 'B' });
+    await settingsService.updateSettings({ apiKey: 'A' });
+    expect((await store.load()).credentialGeneration).toBe(2);
+    expect((await service.classify(input, folders, initial.settings, true)).source).toBe('ai');
+
+    const request = provider.getCacheRequest!;
+    provider.classify = vi.fn(async (item, candidates, config, corrections, callback) => {
+      callback?.(request('single', [item], candidates, config, corrections));
+      await settingsService.updateSettings({ apiKey: 'C' });
+      return { action: 'keep' as const, confidence: 0.4, reason: 'done' };
+    });
+    const racing = { ...input, url: 'https://example.com/inflight' };
+    const countBefore = Object.keys((await store.load()).cache).length;
+    await service.classify(racing, folders, initial.settings, true);
+    expect(Object.keys((await store.load()).cache)).toHaveLength(countBefore);
+  });
+
+  it('uses supplied learning snapshots and degrades safely when cryptography is unavailable', async () => {
+    const store = new MemoryStateRepository();
+    const provider = createProvider();
+    const service = new ClassificationService(provider, store);
+    const snapshot = await store.load();
+    await store.update((state) => { state.corrections['example.com'] = { domain: 'example.com', action: 'keep', createdAt: 1 }; });
+    expect((await service.classify(input, folders, settings, true, snapshot)).source).toBe('ai');
+    expect((await service.classify(input, folders, settings, false)).source).toBe('rule');
+    const savedCrypto = globalThis.crypto;
+    try {
+      Object.defineProperty(globalThis, 'crypto', { configurable: true, value: undefined });
+      const noCrypto = new ClassificationService(createProvider(), new MemoryStateRepository());
+      expect((await noCrypto.classify(input, folders, settings, true)).source).toBe('ai');
+      await expect(noCrypto.classify(input, folders, settings, false)).rejects.toBeInstanceOf(PermissionRequiredError);
+    } finally {
+      Object.defineProperty(globalThis, 'crypto', { configurable: true, value: savedCrypto });
+    }
+  });
+});
+
 function createProvider(): ClassifierProvider {
+  const getCacheRequest = (mode: 'single' | 'batch', inputs: ClassificationInput[], candidates: FolderSummary[], _config: ProviderConfig, corrections?: RecentCorrection[]) => ({
+    mode,
+    messages: mode === 'single'
+      ? buildClassificationMessages(inputs[0]!, candidates, corrections)
+      : buildBatchMessages(inputs, candidates, corrections),
+  });
   return {
-    classify: vi.fn(async () => ({ action: 'keep' as const, confidence: 0.4, reason: '没有明显分类。' })),
-    classifyBatch: vi.fn(async (inputs: unknown[]) =>
-      inputs.map(() => ({ action: 'keep' as const, confidence: 0.4, reason: '没有明显分类。' }))),
+    getCacheRequest,
+    getCacheVariant: () => 0,
+    classify: vi.fn(async (input, candidates, config, corrections, onRequest) => {
+      onRequest?.(getCacheRequest('single', [input], candidates, config, corrections));
+      return { action: 'keep' as const, confidence: 0.4, reason: '没有明显分类。' };
+    }),
+    classifyBatch: vi.fn(async (inputs, candidates, config, corrections, onRequest) => {
+      onRequest?.(getCacheRequest('batch', inputs, candidates, config, corrections));
+      return inputs.map(() => ({ action: 'keep' as const, confidence: 0.4, reason: '没有明显分类。' }));
+    }),
     test: vi.fn(async () => undefined),
   };
 }

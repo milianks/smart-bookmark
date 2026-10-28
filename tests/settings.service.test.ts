@@ -39,6 +39,22 @@ describe('SettingsService', () => {
     expect(await store.load()).toEqual(before);
   });
 
+  it('increments credential generation only for actual changes, including A→B→A', async () => {
+    const initial = emptyPersistedState();
+    initial.settings.apiKey = 'A';
+    const store = new MemoryStateRepository(initial);
+    const classifier: ClassifierPort = { classify: vi.fn(async () => ({ result: { action: 'keep' as const, confidence: 0.5, reason: 'test' }, source: 'ai' as const })) };
+    const service = new SettingsService({ store, classifier, hasProviderPermission: async () => true, afterUpdate: async () => {} });
+    await service.updateSettings({ apiKey: ' A ' });
+    await service.updateSettings({ apiKey: '' });
+    await service.updateSettings({ model: 'new-model' });
+    expect((await store.load()).credentialGeneration).toBe(0);
+    await service.updateSettings({ apiKey: 'B' });
+    expect(await store.load()).toMatchObject({ settings: { apiKey: 'B' }, credentialGeneration: 1 });
+    await service.updateSettings({ apiKey: 'A' });
+    expect(await store.load()).toMatchObject({ settings: { apiKey: 'A' }, credentialGeneration: 2 });
+  });
+
   it('rejects provider testing without a saved API key', async () => {
     const store = new MemoryStateRepository();
     const classifier: ClassifierPort = { classify: vi.fn(async () => ({ result: { action: 'keep' as const, confidence: 0.5, reason: 'test' }, source: 'ai' as const })), testProvider: vi.fn(async () => {}) };

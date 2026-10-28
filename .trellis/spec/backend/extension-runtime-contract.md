@@ -26,10 +26,10 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 
 - The background validates with `RequestSchema` before dispatching to `handleRequest`; the router calls only injected service facades and preserves the existing success/error envelope at the listener boundary.
   For `settings:update`, normalize a shallow copy of `request.settings` so the parsed request is not mutated; return no API key or provider payload.
-- Classification input contains one new bookmark's title, URL, domain, current folder ID/path, and folder `{id, name, path, samples?}` summaries from the persisted smart bookmark root only. Each optional `samples` array contains at most three direct-child HTTP(S) bookmarks with bounded `{title, url, hostname}` fields. Never send the full bookmark tree or page content to the provider.
+- Classification input contains a bookmark's title, original URL, domain, current folder ID/path, and optional derived page profile, plus folder summaries from the persisted smart bookmark root. Each optional `samples` array contains at most three direct-child HTTP(S) bookmarks with bounded `{title, url, hostname}` fields. Never send the full bookmark tree or raw page content to the provider.
 - The local classifier may use bookmark title, URL path, domain-specific hints, and bounded folder samples. A shared domain alone is not enough to trigger a local automatic move; require topical overlap from title/path/sample text or an exact sample URL. A generic folder token alone is not strong evidence.
-- Before a provider call, rank folders using these signals. When a strong, unambiguous signal exists and the tree has more than six folders, send at most six ranked folders while retaining the current folder. When evidence is weak or ambiguous, send the complete live folder list. Validate the provider's destination against the complete live smart-root folder set, not the candidate subset.
-- Classification cache identity includes the normalized URL, bookmark title, current folder, live folder paths, and bounded folder samples so title or tree changes cannot reuse a stale decision.
+- Re-evaluate domain corrections, topic/content-type preferences, and deterministic rules before looking up an AI cache entry. Rank provider folders using the estimated budget, not a fixed six-folder limit; validate destinations against the complete supplied smart-root folder set, not only the candidates. See the classification cache scenario below for the selection and reuse contract.
+- Cache only eligible, validated AI results against their actual single or complete-batch request context; a folder change outside that context need not invalidate an otherwise valid hit.
 - Classification output is strict Zod data: `move` requires `targetFolderId`; `suggest_folder` requires a name and `parentId`; `keep` has no destination; confidence is in `[0,1]`.
 - Persist jobs, review items, settings and settings drafts, cache, activity history, import marker, undo record, and pending mutation intent through `chrome.storage.local`. Keep API keys out of sync storage, logs, errors, and notifications.
 - Register Chrome listeners synchronously at background module initialization. Persist a job before classification; use bookmark ID as its idempotency key. Use alarms for finite retry and worker restart recovery.
@@ -50,7 +50,7 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 | Smart root ID is missing, deleted, or no longer resolves to an editable folder | Keep bookmarks in place; initialization may recreate/recover the root before queued work resumes |
 | Import marker active | Suppress new classification; expire stale marker during recovery |
 | API key missing | Persist `awaiting_configuration`; leave bookmark where it is |
-| API origin permission missing | Persist `awaiting_permission`; do not call `fetch` |
+| API origin permission missing | With a configured key, a local decision or valid AI cache hit can still complete; if an AI request is needed, persist `awaiting_permission` and do not call `fetch` |
 | Provider-origin permission later granted | On settings update or worker resume, recheck the configured origin and requeue only if the API key and permission are both present |
 | Provider timeout, HTTP failure, invalid JSON, or schema failure | Keep bookmark in place; record visible failure; retry only bounded transient errors |
 | Bookmark move rejects | Immediately reconcile the pending intent against the live parent; do not leave a stale intent blocking later mutations |
@@ -69,7 +69,7 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 - Mock `BookmarkPort`, `StateRepository`, classifier, notifications, and alarms.
 - Assert existing-folder auto-move, new-folder approval, rejection, missing key, provider failure, import suppression, deleted targets, duplicate/concurrent events, worker recovery, and undo.
 - Assert a rejected move clears or reconciles its pending intent immediately, including the case where the browser applied the move before the promise rejected; later mutations must not remain blocked.
-- Assert missing provider permission leaves the job waiting and granting the exact configured origin lets `resume()` classify it once.
+- Assert missing provider permission leaves a provider-dependent job waiting, while eligible local/cache results remain available; granting the exact configured origin lets `resume()` classify waiting work once.
 - Assert root-outside bookmarks and targets never reach the provider, review creation, folder creation, movement, or undo; changing folder names and nesting changes the next classification's live summaries.
 - Assert every failed/stale path leaves the bookmark parent unchanged and does not call create/move unexpectedly.
 - Inspect the production manifest: required permissions are `bookmarks`, `storage`, `notifications`, `alarms`, and `identity.email`; provider origins remain optional and no static all-site permission is present.
@@ -105,6 +105,67 @@ try {
 
 This is the live-source/target and durable-intent sequence used by `OrganizerService.automaticMove`. A rejected call can still have changed the browser state, so reconciliation compares the actual parent with both recorded parents before deciding whether the operation completed or failed. Keep Chrome API mutation inside the organizer and validate every ID against the current smart-root subtree.
 
+## Scenario: Classification candidates and AI cache reuse
+
+### 1. Scope / Trigger
+
+Use this contract when changing folder ranking, classification inputs, learned decisions, provider request construction, cache persistence, or historical batch classification. Reuse must preserve the decision and the actual provider-request context, not merely match a bookmark URL.
+
+### 2. Signatures
+
+- `ClassifierPort.classify(input, folders, settings, hasProviderPermission, snapshot?): Promise<ClassifiedResult>`.
+- `ClassifierPort.classifyBatch?(inputs, folders, settings, hasProviderPermission, snapshot?): Promise<BatchOutcome[]>`.
+- `ClassifierProvider.getCacheRequest?(mode, inputs, folders, config, recentCorrections?): Record<string, unknown> | undefined`; `classify` and `classifyBatch` can report the successful request body through `onRequest`.
+- `ClassifierProvider.getCacheVariant?(): number | undefined`; `ClassifiedResult.cacheValidation?(): boolean` is a transient check for cached outcomes and must never be persisted or exposed in dashboard data.
+- `rankFolderCandidates(input: ClassificationInput, folders: FolderSummary[]): FolderSummary[]`; `trimFolderBudget(folders: FolderSummary[]): FolderSummary[]`.
+- A version-2 `CacheEntry` stores `key`, the legacy-compatible first `result`, `source: 'ai'`, `createdAt`, `version: 2`, `mode`, and ordered `results`.
+
+### 3. Contracts
+
+- Require a configured API key first. For each input, re-evaluate the domain correction, page-profile preference, and full-folder deterministic rule in that order. Apply the current confidence threshold to the deterministic rule. These local decisions are not AI cache entries.
+- Candidate selection uses an estimated 10,000-byte folder budget, not an exact serialized-byte ceiling. At or below that estimate, a single request keeps the supplied folder list in order. Above it, weak or ambiguous evidence still keeps the full list; meaningful evidence ranks folders and uses the estimate to select candidates, with a floor of 12 when enough ranked folders exist and samples stripped where necessary to meet that floor. A ranked single request retains its current folder when present, replacing the last selected folder if needed. This is neither a six-folder maximum nor a guarantee that every request is truncated.
+- A batch first resolves local decisions, preserves input positions, then builds the shared candidate list from the ordered union of ranked lists for at most the first eight remaining AI inputs and applies `trimFolderBudget`. The final batch trim does not guarantee retention of every input's current folder. Recent decisions are recomputed from up to five corrections ordered by `createdAt` descending, including folder paths resolved from the supplied full folder list.
+- Versioned single and batch keys use HMAC-SHA-256 over serialized context: mode, ordered original inputs including URL and optional derived profile, protocol, normalized endpoint, model, credential generation, and the provider's expected request body. The body contains the ordered serialized candidates, recent decisions, prompt, schema and request parameters. The API key is the HMAC secret, not persisted in the cache key; do not persist the request body, raw page content, or derived profile solely for matching. Remote provider behavior can change without a visible configuration change.
+- A lookup is eligible only when the provider can describe the expected request and a valid matching entry exists. A fresh result is stored only when the reported successful request body matches that expected identity; fallback tool/prompt/reasoning variants may therefore miss, including after worker restart. If cryptography, identity construction, or a provable request variant is unavailable, skip reuse rather than assume equivalence. Not every successful request is cacheable.
+- Cache lookup checks the expected request and monotonic provider-variant token around asynchronous hashing, with at most three attempts. A cached outcome carries a token check through the organizer's final comparison; a concurrent fallback invalidates that outcome even if the provider later returns to a previous request shape. Equivalent fallback observations do not advance the token.
+- Keep single and batch namespaces separate. A batch entry represents exactly the complete ordered AI subset from one request and its shared context; never assemble a hit from individual prior requests. Merge local and AI outcomes back into original order. If any AI member is invalid or missing, do not cache a partial batch, even if another member can be returned as a per-item success. Changes to batch membership or order can increase provider calls.
+- Validate cached and fresh `move` targets and `suggest_folder` parents against the complete supplied folder set, excluding managed folders; `keep` has no target. Validate and remove the provider's batch `index` values before strict result validation. The organizer's live smart-root and source/target checks still apply before review approval or mutation.
+- The repository rejects legacy, malformed, mismatched, or oversized entries; old keys are cold misses. Cache at most 200 results in total and at most 64 KiB per encoded entry, evicting whole entries rather than splitting batches. Persist credential generation with settings, increment it on an actual API-key change, and recheck both generation and key in the repository update before writing a cache entry. Existing settings, jobs and reviews remain separate from cache normalization.
+- The organizer shares a folder/settings/repository snapshot across a prepared batch, checks it after preparation, and compares the root, settings, corrections, preferences, credential generation, full folder summaries, and relevant job/bookmark data again before applying results. Apply the comparison to cache hits and provider responses; on a detected change, discard affected results and retry within the existing bounded limit or fail safely. Batch outcomes are applied individually, with checks before remaining outcomes.
+- The classifier can write a valid AI cache entry before the organizer's final comparison; the write checks credential generation and key, not every bookmark or learning field. A later lookup must still recompute local decisions and match its own request context. Chrome bookmarks and extension storage do not share an atomic transaction: comparisons are sequential, cannot guarantee global snapshot isolation or detect every intervening change, and cannot protect against changes after the final check. Live mutation checks remain necessary.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Missing API key | Fail before local or cache classification; do not call the provider |
+| Missing provider-origin permission | With a key, return an eligible local result or complete valid cache hit; otherwise fail with `PermissionRequiredError` without a provider call. A mixed batch needing AI fails at batch level, not as a silently returned subset |
+| Legacy, malformed, wrong-mode, mismatched, oversized, or invalid-target entry | Treat as a miss; do not reuse any part of an invalid batch |
+| Successful request variant differs from expected or cannot be proven | Do not store that response for reuse under the expected key |
+| Failed, incomplete, schema-invalid, or invalid-target batch | Never persist a reusable partial batch; preserve existing per-item errors where applicable |
+| Context change detected during preparation or before application | Discard affected outcomes, retry boundedly, or fail without applying them |
+| Credential changes while a request is in flight | The repository update skips its cache write; the organizer separately checks the classification context |
+
+### 5. Good / Base / Bad Cases
+
+- **Good**: In an over-budget tree, an excluded folder changes without changing the local decision, ordered provider context, or target validity; an otherwise eligible cached result may be reused.
+- **Base**: For a single request, all folders fit the budget or evidence is weak, so they are sent; a change to a sent folder can legitimately produce a miss.
+- **Bad**: A batch member changes or moves position, or a stored target becomes managed/deleted; do not reuse individual members of the prior batch.
+
+### 6. Tests Required
+
+- Assert the local correction, preference, and threshold-aware rule run before cache lookup; verify a missing key and single/batch permission behavior.
+- Cover budget-fit, weak-evidence and over-budget candidate selection, including single current-folder retention and batch union/trim behavior. Compare the old full-tree fingerprint with a stable excluded-folder change and count provider calls.
+- Assert original URL, candidate order/data/parent, recent correction paths, protocol/model, request variants, and batch membership/order affect reuse; test default and fallback paths across worker restart.
+- Assert complete batch hits, mixed local/AI result order, real provider `index` normalization, invalid targets, incomplete responses, and no partial batch writes.
+- Cover legacy/malformed state and old-code access to new state, credential A-to-B-to-A and in-flight changes, result/encoded-size limits, whole-batch eviction, and absence of key material or request bodies in cache storage.
+- Exercise preparation, post-cache and pre-response context changes, bounded retries, live source/target checks, and historical scans using the real cache. Distinguish scan job/review deduplication from cache hits and provider invocations from HTTP retries/fallback.
+
+### 7. Wrong vs Correct
+
+- **Wrong**: Look up a result by normalized URL and the entire folder tree before consulting current corrections, or reuse individual results from a different AI batch.
+- **Correct**: Recompute local decisions first, then reuse only a validated single result or complete batch whose expected request context matches; otherwise classify the current AI subset and recheck the organizer context before application.
+
 ## Scenario: Multi-protocol AI provider and connection test
 
 ### 1. Scope / Trigger
@@ -138,7 +199,7 @@ Use this contract when changing provider protocol selection, provider request co
 
 ### 5. Good / Base / Bad Cases
 
-- **Good**: `https://provider.example/v1` with `openai-responses` calls `/v1/responses`, extracts assistant text, validates the result, and caches only normal classification output.
+- **Good**: `https://provider.example/v1` with `openai-responses` calls `/v1/responses`, extracts assistant text, validates the result, and caches it only when its normal classification request is eligible for reuse.
 - **Base**: Legacy settings omit `protocol`; load keeps the existing URL, model, key, and organization preferences while selecting Chat Completions.
 - **Bad**: A 200 response contains malformed or schema-invalid output; report a safe failure and leave the bookmark unchanged.
 
@@ -202,7 +263,7 @@ Use this contract when adding or changing the explicit scan of existing bookmark
 |---|---|
 | A second scan starts while status is `scanning` or `awaiting_review` | Reject without replacing the active scan |
 | A scan request arrives concurrently with another start | Reject through the in-memory start lock |
-| No API key or provider origin permission | Persist waiting jobs; leave bookmarks in place; resume after settings/permission recovery |
+| No API key, or missing provider origin permission when AI is needed | Persist waiting jobs; leave bookmarks in place; resume after settings/permission recovery |
 | AI returns `move` or `suggest_folder` | Persist a pending review; do not mutate during scan |
 | Bookmark moved/deleted before approval | Mark review/job stale or skipped; do not overwrite the live placement |
 | Batch approval request repeats or overlaps another batch | Reject concurrent request; never perform a second move for an approved review |

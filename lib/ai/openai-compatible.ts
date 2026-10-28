@@ -15,8 +15,8 @@ export class ProviderError extends Error {
 }
 
 const BatchResultSchema = z.object({
-  results: z.array(ClassificationResultSchema.and(z.object({ index: z.number().int().min(0) }))),
-});
+  results: z.array(z.unknown()),
+}).strict();
 
 /**
  * 结构化输出的第一层：把结果形状写进工具的 JSON Schema。
@@ -96,8 +96,10 @@ const METADATA_TOOL: ToolSpec = {
 };
 
 export interface ClassifierProvider {
-  classify(input: ClassificationInput, folders: FolderSummary[], config: ProviderConfig, recentCorrections?: RecentCorrection[]): Promise<ClassificationResult>;
-  classifyBatch?(inputs: ClassificationInput[], folders: FolderSummary[], config: ProviderConfig, recentCorrections?: RecentCorrection[]): Promise<ClassificationResult[]>;
+  getCacheRequest?(mode: 'single' | 'batch', inputs: ClassificationInput[], folders: FolderSummary[], config: ProviderConfig, recentCorrections?: RecentCorrection[]): Record<string, unknown> | undefined;
+  getCacheVariant?(): number | undefined;
+  classify(input: ClassificationInput, folders: FolderSummary[], config: ProviderConfig, recentCorrections?: RecentCorrection[], onRequest?: (body: Record<string, unknown>) => void): Promise<ClassificationResult>;
+  classifyBatch?(inputs: ClassificationInput[], folders: FolderSummary[], config: ProviderConfig, recentCorrections?: RecentCorrection[], onRequest?: (body: Record<string, unknown>) => void): Promise<ClassificationResult[]>;
   generateMetadata?(input: BookmarkMetadataInput, config: ProviderConfig): Promise<SummaryTagResult>;
   test(config: ProviderConfig): Promise<void>;
 }
@@ -109,14 +111,41 @@ export interface ClassifierProvider {
 export class OpenAICompatibleProvider implements ClassifierProvider {
   constructor(private readonly fetcher: typeof fetch = fetch.bind(globalThis)) {}
 
+  private cacheVariant = 0;
+
+  getCacheVariant(): number | undefined {
+    return Number.isSafeInteger(this.cacheVariant) ? this.cacheVariant : undefined;
+  }
+
+  getCacheRequest(
+    mode: 'single' | 'batch',
+    inputs: ClassificationInput[],
+    folders: FolderSummary[],
+    config: ProviderConfig,
+    recentCorrections?: RecentCorrection[],
+  ): Record<string, unknown> | undefined {
+    if (mode === 'single' && inputs.length !== 1) return undefined;
+    const messages = mode === 'single'
+      ? buildClassificationMessages(inputs[0]!, folders, recentCorrections)
+      : buildBatchMessages(inputs, folders, recentCorrections);
+    const shape = `${config.protocol}:${config.baseUrl}:${config.model}`;
+    const promptOnly = this.promptModeOnlyFor === shape;
+    return buildRequestBody(config, promptOnly ? inlineInstructions(messages) : messages, {
+      maxTokens: mode === 'batch' ? 4_000 : undefined,
+      ...(promptOnly ? {} : { tool: mode === 'single' ? CLASSIFICATION_TOOL : BATCH_TOOL }),
+      disableReasoning: this.reasoningOptOutFailedFor !== shape,
+    });
+  }
+
   async classify(
     input: ClassificationInput,
     folders: FolderSummary[],
     config: ProviderConfig,
     recentCorrections?: RecentCorrection[],
+    onRequest?: (body: Record<string, unknown>) => void,
   ): Promise<ClassificationResult> {
     const messages = buildClassificationMessages(input, folders, recentCorrections);
-    const parsed = await this.askStructured(config, messages, CLASSIFICATION_TOOL);
+    const parsed = await this.askStructured(config, messages, CLASSIFICATION_TOOL, undefined, onRequest);
     const result = ClassificationResultSchema.safeParse(parsed);
     if (!result.success) throw new ProviderError('AI 分类结果不符合安全格式，书签已保留原位', false);
     return result.data;
@@ -127,18 +156,25 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     folders: FolderSummary[],
     config: ProviderConfig,
     recentCorrections?: RecentCorrection[],
+    onRequest?: (body: Record<string, unknown>) => void,
   ): Promise<ClassificationResult[]> {
     if (inputs.length === 0) return [];
     const messages = buildBatchMessages(inputs, folders, recentCorrections);
-    const parsed = await this.askStructured(config, messages, BATCH_TOOL, 4_000);
+    const parsed = await this.askStructured(config, messages, BATCH_TOOL, 4_000, onRequest);
     const batch = BatchResultSchema.safeParse(parsed);
     if (!batch.success) throw new ProviderError('AI 批量结果不符合安全格式', false);
     const byIndex = new Map<number, ClassificationResult>();
     for (const entry of batch.data.results) {
-      if (entry.index >= inputs.length || byIndex.has(entry.index)) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new ProviderError('AI 批量结果不符合安全格式', false);
+      }
+      const { index, ...value } = entry as Record<string, unknown>;
+      if (typeof index !== 'number' || !Number.isInteger(index) || index < 0 || index >= inputs.length || byIndex.has(index)) {
         throw new ProviderError('AI 批量结果 index 不完整或重复', true);
       }
-      byIndex.set(entry.index, entry);
+      const result = ClassificationResultSchema.safeParse(value);
+      if (!result.success) throw new ProviderError('AI 批量结果不符合安全格式', false);
+      byIndex.set(index, result.data);
     }
     if (byIndex.size !== inputs.length) throw new ProviderError('AI 批量结果缺少某些书签', true);
     return inputs.map((_, index) => byIndex.get(index)!);
@@ -190,6 +226,7 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     messages: ClassificationMessage[],
     tool: ToolSpec,
     maxTokens?: number,
+    onRequest?: (body: Record<string, unknown>) => void,
   ): Promise<unknown> {
     const shape = `${config.protocol}:${config.baseUrl}:${config.model}`;
     if (this.promptModeOnlyFor !== shape) {
@@ -202,11 +239,20 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
           const payload = await this.request(config, body);
           assertNotTruncated(payload, config.protocol);
           const structured = extractToolPayload(payload, config.protocol);
-          if (structured !== undefined) return structured;
+          if (structured !== undefined) {
+            onRequest?.(body);
+            return structured;
+          }
           const text = readContentText(payload, config.protocol);
           const parsed = text === undefined ? undefined : tryParseJson(text);
-          if (parsed !== undefined) return parsed;
-          this.promptModeOnlyFor = shape;
+          if (parsed !== undefined) {
+            onRequest?.(body);
+            return parsed;
+          }
+          if (this.promptModeOnlyFor !== shape) {
+            this.promptModeOnlyFor = shape;
+            this.cacheVariant += 1;
+          }
           break;
         } catch (error) {
           if (!(error instanceof ProviderError)) throw error;
@@ -214,10 +260,16 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
           // 400/422 才可能是参数不被接受；404 通常是地址或模型不对，不应降级重试。
           if (status !== 400 && status !== 422) throw error;
           if (disableReasoning) {
-            this.reasoningOptOutFailedFor = shape;
+            if (this.reasoningOptOutFailedFor !== shape) {
+              this.reasoningOptOutFailedFor = shape;
+              this.cacheVariant += 1;
+            }
             continue;
           }
-          this.promptModeOnlyFor = shape;
+          if (this.promptModeOnlyFor !== shape) {
+            this.promptModeOnlyFor = shape;
+            this.cacheVariant += 1;
+          }
           break;
         }
       }
@@ -228,7 +280,9 @@ export class OpenAICompatibleProvider implements ClassifierProvider {
     });
     const payload = await this.request(config, body);
     assertNotTruncated(payload, config.protocol);
-    return parseJsonContent(extractClassificationText(payload, config.protocol));
+    const parsed = parseJsonContent(extractClassificationText(payload, config.protocol));
+    onRequest?.(body);
+    return parsed;
   }
 
   private async request(config: ProviderConfig, body: Record<string, unknown>): Promise<Record<string, unknown>> {

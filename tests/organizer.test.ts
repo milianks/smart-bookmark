@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, emptyPersistedState, type ClassificationResult, type FolderSummary } from '../types/domain';
 import { MemoryStateRepository } from '../lib/storage/repository';
-import type { BookmarkNode, BookmarkPort } from '../services/bookmark.service';
+import { getFoldersWithinRoot, type BookmarkNode, type BookmarkPort } from '../services/bookmark.service';
 import { PermissionRequiredError, type ClassifierPort } from '../services/classifier.service';
 import { ProviderError } from '../lib/ai/openai-compatible';
 import type { NotificationPort } from '../services/notification.service';
@@ -445,7 +445,18 @@ class FakeBookmarks implements BookmarkPort {
     ] },
   ];
 
-  async getTree(): Promise<BookmarkNode[]> { return structuredClone(this.nodes); }
+  async getTree(): Promise<BookmarkNode[]> {
+    const tree = structuredClone(this.nodes);
+    for (const [id, parentId] of this.parents) {
+      const node = findNode(tree, id);
+      if (!node || node.parentId === parentId) continue;
+      const oldParent = findNode(tree, node.parentId ?? '');
+      if (oldParent?.children) oldParent.children = oldParent.children.filter((child) => child.id !== id);
+      node.parentId = parentId;
+      findNode(tree, parentId)?.children?.push(node);
+    }
+    return tree;
+  }
   async getBookmark(id: string): Promise<BookmarkNode | null> {
     const node = findNode(this.nodes, id);
     if (!node?.url) return null;
@@ -478,8 +489,7 @@ class FakeBookmarks implements BookmarkPort {
     return false;
   }
   async getFoldersWithinRoot(rootId: string): Promise<FolderSummary[]> {
-    if (rootId !== 'smart-root') return [];
-    return (await this.getFolders()).filter((folder) => folder.id === 'smart-root' || folder.id === 'folder-dev' || folder.id.startsWith('created-'));
+    return getFoldersWithinRoot(await this.getTree(), rootId);
   }
   async isValidTargetFolder(targetFolderId: string, rootId: string): Promise<boolean> {
     return (await this.getFoldersWithinRoot(rootId)).some((folder) => folder.id === targetFolderId);

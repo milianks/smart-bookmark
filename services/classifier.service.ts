@@ -1,19 +1,24 @@
-import type {
-  CacheEntry,
-  ClassifiedResult,
-  ClassificationResult,
-  CorrectionEntry,
-  FolderSummary,
-  PreferenceRule,
-  Settings,
+import {
+  CACHE_ENTRY_MAX_BYTES,
+  CacheEntrySchema,
+  ClassificationResultSchema,
+  type ClassifiedResult,
+  type ClassificationResult,
+  type CorrectionEntry,
+  type FolderSummary,
+  type PersistedState,
+  type PreferenceRule,
+  type Settings,
 } from '../types/domain';
-import type { StateRepository } from '../lib/storage/repository';
-import { hostnameKey, normalizedUrl, stableFingerprint } from '../lib/utils/ids';
+import { normalizeCache, type StateRepository } from '../lib/storage/repository';
+import { hostnameKey } from '../lib/utils/ids';
 import type { ClassificationInput, RecentCorrection } from '../lib/ai/prompts';
 import type { ClassifierProvider } from '../lib/ai/openai-compatible';
 import { ProviderError } from '../lib/ai/openai-compatible';
 import { classifyWithRules, rankFolderCandidates, trimFolderBudget } from '../lib/ai/rule-classifier';
-import { normalizeBaseUrl } from '../lib/ai/provider-config';
+import { normalizeBaseUrl, providerUrl, type ProviderConfig } from '../lib/ai/provider-config';
+
+const MAX_CACHE_LOOKUP_ATTEMPTS = 3;
 
 export class PermissionRequiredError extends Error {
   constructor() {
@@ -28,12 +33,14 @@ export interface ClassifierPort {
     folders: FolderSummary[],
     settings: Settings,
     hasProviderPermission: boolean,
+    snapshot?: PersistedState,
   ): Promise<ClassifiedResult>;
   classifyBatch?(
     inputs: ClassificationInput[],
     folders: FolderSummary[],
     settings: Settings,
     hasProviderPermission: boolean,
+    snapshot?: PersistedState,
   ): Promise<BatchOutcome[]>;
   testProvider?(settings: Settings): Promise<void>;
 }
@@ -49,42 +56,47 @@ export class ClassificationService implements ClassifierPort {
     folders: FolderSummary[],
     settings: Settings,
     hasProviderPermission: boolean,
+    snapshot?: PersistedState,
   ): Promise<ClassifiedResult> {
     if (!settings.apiKey.trim()) throw new ProviderError('请先在设置中配置 API Key。', false);
-    const cacheKey = makeCacheKey(input, folders, settings);
-    const snapshot = await this.store.load();
-    const cached = snapshot.cache[cacheKey];
-    if (cached && resultReferencesFolders(cached.result, folders)) {
-      return { result: cached.result, source: 'cache' };
-    }
-    if (cached) {
-      await this.store.update((state) => { delete state.cache[cacheKey]; });
-    }
+    const state = snapshot ?? await this.store.load();
+    const local = localDecision(input, folders, settings, state);
+    if (local) return { result: local, source: 'rule' };
 
-    const corrected = applyCorrection(snapshot.corrections[hostnameKey(input.domain)], input, folders);
-    if (corrected) return { result: corrected, source: 'rule' };
-    const preferred = applyPreference(snapshot.preferences, input, folders);
-    if (preferred) return { result: preferred, source: 'rule' };
-
-    const localResult = classifyWithRules(input, folders);
-    if (localResult && localResult.confidence >= settings.confidenceThreshold) {
-      await cacheResult(this.store, cacheKey, localResult, 'cache');
-      return { result: localResult, source: 'rule' };
+    const providerFolders = rankFolderCandidates(input, folders);
+    const recentCorrections = recentUserDecisions(state.corrections, folders);
+    const config = providerConfig(settings);
+    let key: string | undefined;
+    for (let attempt = 0; attempt < MAX_CACHE_LOOKUP_ATTEMPTS; attempt += 1) {
+      const variant = this.provider.getCacheVariant?.();
+      const request = this.provider.getCacheRequest?.('single', [input], providerFolders, config, recentCorrections);
+      const requestIdentity = serializeCacheRequest(request);
+      key = Number.isSafeInteger(variant) && variant! >= 0 && request && requestIdentity !== undefined
+        ? await makeCacheKey('single', [input], config, request, state.credentialGeneration)
+        : undefined;
+      if (!key) break;
+      const cached = validCacheResults(state.cache[key], key, 'single', 1, folders);
+      if (serializeCacheRequest(this.provider.getCacheRequest?.('single', [input], providerFolders, config, recentCorrections)) !== requestIdentity
+        || this.provider.getCacheVariant?.() !== variant) {
+        key = undefined;
+        continue;
+      }
+      if (cached) return { result: cached[0]!, source: 'cache', cacheValidation: cacheVariantCheck(this.provider, variant!) };
+      break;
     }
     if (!hasProviderPermission) throw new PermissionRequiredError();
 
-    const providerFolders = rankFolderCandidates(input, folders);
-    const recentCorrections = recentUserDecisions(snapshot.corrections, folders);
-    const result = await this.provider.classify(input, providerFolders, {
-      protocol: settings.protocol,
-      baseUrl: normalizeBaseUrl(settings.baseUrl),
-      model: settings.model,
-      apiKey: settings.apiKey,
-    }, recentCorrections);
+    let actualRequest: Record<string, unknown> | undefined;
+    const rawResult = await this.provider.classify(input, providerFolders, config, recentCorrections, (body) => { actualRequest = body; });
+    const parsed = ClassificationResultSchema.safeParse(rawResult);
+    if (!parsed.success) throw new ProviderError('AI 分类结果不符合安全格式，书签已保留原位。', false);
+    const result = parsed.data;
     if (!resultReferencesFolders(result, folders)) {
       throw new ProviderError('AI 推荐了当前书签树中不存在的文件夹，书签已保留原位。', false);
     }
-    await cacheResult(this.store, cacheKey, result, 'ai');
+    if (key && actualRequest && await makeCacheKey('single', [input], config, actualRequest, state.credentialGeneration) === key) {
+      await cacheResults(this.store, key, 'single', [result], state.settings.apiKey, state.credentialGeneration);
+    }
     return { result, source: 'ai' };
   }
 
@@ -93,57 +105,73 @@ export class ClassificationService implements ClassifierPort {
     folders: FolderSummary[],
     settings: Settings,
     hasProviderPermission: boolean,
+    snapshot?: PersistedState,
   ): Promise<BatchOutcome[]> {
     if (!settings.apiKey.trim()) throw new ProviderError('请先在设置中配置 API Key。', false);
-    const snapshot = await this.store.load();
+    const state = snapshot ?? await this.store.load();
     const outcomes: BatchOutcome[] = new Array<BatchOutcome>(inputs.length);
     const pendingInputs: ClassificationInput[] = [];
     const pendingPositions: number[] = [];
     for (const [index, input] of inputs.entries()) {
-      const cacheKey = makeCacheKey(input, folders, settings);
-      const cached = snapshot.cache[cacheKey];
-      if (cached && resultReferencesFolders(cached.result, folders)) {
-        outcomes[index] = { result: { result: cached.result, source: 'cache' } };
-        continue;
+      const local = localDecision(input, folders, settings, state);
+      if (local) {
+        outcomes[index] = { result: { result: local, source: 'rule' } };
+      } else {
+        pendingInputs.push(input);
+        pendingPositions.push(index);
       }
-      const corrected = applyCorrection(snapshot.corrections[hostnameKey(input.domain)], input, folders);
-      if (corrected) {
-        outcomes[index] = { result: { result: corrected, source: 'rule' } };
-        continue;
-      }
-      const preferred = applyPreference(snapshot.preferences, input, folders);
-      if (preferred) {
-        outcomes[index] = { result: { result: preferred, source: 'rule' } };
-        continue;
-      }
-      const localResult = classifyWithRules(input, folders);
-      if (localResult && localResult.confidence >= settings.confidenceThreshold) {
-        await cacheResult(this.store, cacheKey, localResult, 'cache');
-        outcomes[index] = { result: { result: localResult, source: 'rule' } };
-        continue;
-      }
-      pendingInputs.push(input);
-      pendingPositions.push(index);
     }
     if (pendingInputs.length === 0) return outcomes;
-    if (!hasProviderPermission) throw new PermissionRequiredError();
 
     const providerFolders = batchProviderFolders(pendingInputs, folders);
-    const results = await this.provider.classifyBatch?.(pendingInputs, providerFolders, {
-      protocol: settings.protocol,
-      baseUrl: normalizeBaseUrl(settings.baseUrl),
-      model: settings.model,
-      apiKey: settings.apiKey,
-    }, recentUserDecisions(snapshot.corrections, folders));
-    if (!results) throw new ProviderError('当前分类服务不支持批量分类。', false);
-    for (const [position, result] of results.entries()) {
-      const index = pendingPositions[position]!;
-      if (!resultReferencesFolders(result, folders)) {
-        outcomes[index] = { error: new ProviderError('AI 推荐了当前书签树中不存在的文件夹，书签已保留原位。', false) };
+    const recentCorrections = recentUserDecisions(state.corrections, folders);
+    const config = providerConfig(settings);
+    let key: string | undefined;
+    for (let attempt = 0; attempt < MAX_CACHE_LOOKUP_ATTEMPTS; attempt += 1) {
+      const variant = this.provider.getCacheVariant?.();
+      const request = this.provider.getCacheRequest?.('batch', pendingInputs, providerFolders, config, recentCorrections);
+      const requestIdentity = serializeCacheRequest(request);
+      key = Number.isSafeInteger(variant) && variant! >= 0 && request && requestIdentity !== undefined
+        ? await makeCacheKey('batch', pendingInputs, config, request, state.credentialGeneration)
+        : undefined;
+      if (!key) break;
+      const cached = validCacheResults(state.cache[key], key, 'batch', pendingInputs.length, folders);
+      if (serializeCacheRequest(this.provider.getCacheRequest?.('batch', pendingInputs, providerFolders, config, recentCorrections)) !== requestIdentity
+        || this.provider.getCacheVariant?.() !== variant) {
+        key = undefined;
         continue;
       }
-      await cacheResult(this.store, makeCacheKey(pendingInputs[position]!, folders, settings), result, 'ai');
-      outcomes[index] = { result: { result, source: 'ai' } };
+      if (cached) {
+        const cacheValidation = cacheVariantCheck(this.provider, variant!);
+        cached.forEach((result, position) => { outcomes[pendingPositions[position]!] = { result: { result, source: 'cache', cacheValidation } }; });
+        return outcomes;
+      }
+      break;
+    }
+    if (!hasProviderPermission) throw new PermissionRequiredError();
+
+    let actualRequest: Record<string, unknown> | undefined;
+    const results = await this.provider.classifyBatch?.(pendingInputs, providerFolders, config, recentCorrections, (body) => { actualRequest = body; });
+    if (!results) throw new ProviderError('当前分类服务不支持批量分类。', false);
+    if (!Array.isArray(results) || results.length !== pendingInputs.length) {
+      throw new ProviderError('AI 批量结果缺少某些书签', true);
+    }
+    const validResults: ClassificationResult[] = [];
+    for (const [position, rawResult] of results.entries()) {
+      const index = pendingPositions[position]!;
+      const parsed = ClassificationResultSchema.safeParse(rawResult);
+      if (!parsed.success) {
+        outcomes[index] = { error: new ProviderError('AI 批量结果不符合安全格式', false) };
+      } else if (!resultReferencesFolders(parsed.data, folders)) {
+        outcomes[index] = { error: new ProviderError('AI 推荐了当前书签树中不存在的文件夹，书签已保留原位。', false) };
+      } else {
+        validResults.push(parsed.data);
+        outcomes[index] = { result: { result: parsed.data, source: 'ai' } };
+      }
+    }
+    if (validResults.length === pendingInputs.length && key && actualRequest
+      && await makeCacheKey('batch', pendingInputs, config, actualRequest, state.credentialGeneration) === key) {
+      await cacheResults(this.store, key, 'batch', validResults, state.settings.apiKey, state.credentialGeneration);
     }
     return outcomes;
   }
@@ -169,34 +197,73 @@ function batchProviderFolders(inputs: ClassificationInput[], folders: FolderSumm
   return trimFolderBudget([...union.values()]);
 }
 
-function makeCacheKey(input: ClassificationInput, folders: FolderSummary[], settings: Settings): string {
-  const folderFingerprint = stableFingerprint(
-    folders.map((folder) => JSON.stringify({
-      id: folder.id,
-      name: folder.name,
-      path: folder.path,
-      folderType: folder.folderType ?? '',
-      unmodifiable: folder.unmodifiable ?? '',
-      samples: (folder.samples ?? []).slice(0, 3).map((sample) => ({
-        title: sample.title,
-        url: sample.url,
-        hostname: sample.hostname,
-      })),
-    })).sort(),
-  );
-  const provider = `${settings.protocol}:${normalizeBaseUrl(settings.baseUrl)}:${settings.model}`;
-  const profileFingerprint = input.pageProfile
-    ? stableFingerprint([input.pageProfile.contentType, input.pageProfile.topics.join('\u001f'), input.pageProfile.summary])
-    : '';
-  return `${normalizedUrl(input.url)}|${input.title}|${input.domain}|${input.currentFolderId ?? ''}|${input.currentFolder}|${folderFingerprint}|${provider}|${profileFingerprint}`;
+function providerConfig(settings: Settings): ProviderConfig {
+  return { protocol: settings.protocol, baseUrl: normalizeBaseUrl(settings.baseUrl), model: settings.model, apiKey: settings.apiKey };
+}
+
+function localDecision(input: ClassificationInput, folders: FolderSummary[], settings: Settings, state: PersistedState): ClassificationResult | null {
+  const correction = applyCorrection(state.corrections[hostnameKey(input.domain)], input, folders);
+  if (correction) return correction;
+  const preference = applyPreference(state.preferences, input, folders);
+  if (preference) return preference;
+  const result = classifyWithRules(input, folders);
+  return result && result.confidence >= settings.confidenceThreshold && resultReferencesFolders(result, folders) ? result : null;
+}
+
+function cacheVariantCheck(provider: ClassifierProvider, variant: number): () => boolean {
+  return () => {
+    try {
+      return provider.getCacheVariant?.() === variant;
+    } catch {
+      return false;
+    }
+  };
+}
+
+function serializeCacheRequest(request: Record<string, unknown> | undefined): string | undefined {
+  if (!request) return undefined;
+  try {
+    return JSON.stringify(request);
+  } catch {
+    return undefined;
+  }
+}
+
+async function makeCacheKey(
+  mode: 'single' | 'batch', inputs: ClassificationInput[], config: ProviderConfig,
+  request: Record<string, unknown>, credentialGeneration: number,
+): Promise<string | undefined> {
+  try {
+    if (!Number.isSafeInteger(credentialGeneration) || credentialGeneration < 0 || !globalThis.crypto?.subtle) return undefined;
+    const identity = JSON.stringify({ version: 2, mode, inputs, protocol: config.protocol,
+      endpoint: providerUrl(config.baseUrl, config.protocol), model: config.model, credentialGeneration, request });
+    if (typeof identity !== 'string') return undefined;
+    const secret = await globalThis.crypto.subtle.importKey('raw', new TextEncoder().encode(config.apiKey),
+      { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const digest = await globalThis.crypto.subtle.sign('HMAC', secret, new TextEncoder().encode(identity));
+    const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `classification-v2:${mode}:${hex}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function validCacheResults(
+  value: unknown, key: string, mode: 'single' | 'batch', count: number, folders: FolderSummary[],
+): ClassificationResult[] | undefined {
+  const entry = CacheEntrySchema.safeParse(value);
+  if (!entry.success || entry.data.key !== key || entry.data.mode !== mode || entry.data.results.length !== count
+    || new TextEncoder().encode(JSON.stringify(entry.data)).byteLength > CACHE_ENTRY_MAX_BYTES
+    || !entry.data.results.every((result) => resultReferencesFolders(result, folders))) return undefined;
+  return entry.data.results;
 }
 
 function resultReferencesFolders(result: ClassificationResult, folders: FolderSummary[]): boolean {
   if (result.action === 'move') {
-    return folders.some((folder) => folder.id === result.targetFolderId && folder.unmodifiable !== 'managed');
+    return folders.some((folder) => folder.id === result.targetFolderId && folder.unmodifiable !== 'managed' && folder.folderType !== 'managed');
   }
   if (result.action === 'suggest_folder') {
-    return folders.some((folder) => folder.id === result.suggestedFolder.parentId && folder.unmodifiable !== 'managed');
+    return folders.some((folder) => folder.id === result.suggestedFolder.parentId && folder.unmodifiable !== 'managed' && folder.folderType !== 'managed');
   }
   return true;
 }
@@ -210,7 +277,7 @@ function applyCorrection(
   if (correction.action === 'keep') {
     return { action: 'keep', confidence: 0.9, reason: '此前你选择保留同站点书签原位。' };
   }
-  const target = folders.find((folder) => folder.id === correction.folderId && folder.unmodifiable !== 'managed');
+  const target = folders.find((folder) => folder.id === correction.folderId && folder.unmodifiable !== 'managed' && folder.folderType !== 'managed');
   if (!target || target.id === input.currentFolderId) return null;
   return {
     action: 'move',
@@ -235,7 +302,7 @@ function applyPreference(
     if (rule.contentType && profile.contentType && rule.contentType !== profile.contentType) continue;
     const overlap = rule.topics.filter((topic) => topics.has(topic.toLocaleLowerCase())).length;
     if (overlap === 0) continue;
-    const target = folders.find((folder) => folder.id === rule.folderId && folder.unmodifiable !== 'managed');
+    const target = folders.find((folder) => folder.id === rule.folderId && folder.unmodifiable !== 'managed' && folder.folderType !== 'managed');
     if (!target || target.id === input.currentFolderId) continue;
     const score = overlap + Math.min(rule.weight, 5) * 0.1;
     if (!best || score > best.score) best = { score, target, weight: rule.weight };
@@ -265,15 +332,14 @@ function recentUserDecisions(
     }));
 }
 
-async function cacheResult(
-  store: StateRepository,
-  key: string,
-  result: ClassificationResult,
-  source: CacheEntry['source'],
+async function cacheResults(
+  store: StateRepository, key: string, mode: 'single' | 'batch', results: ClassificationResult[],
+  apiKey: string, credentialGeneration: number,
 ): Promise<void> {
+  const entry = { key, result: results[0], source: 'ai' as const, createdAt: Date.now(), version: 2 as const, mode, results };
+  if (!CacheEntrySchema.safeParse(entry).success || new TextEncoder().encode(JSON.stringify(entry)).byteLength > CACHE_ENTRY_MAX_BYTES) return;
   await store.update((state) => {
-    state.cache[key] = { key, result, source, createdAt: Date.now() };
-    const keys = Object.keys(state.cache);
-    for (const staleKey of keys.slice(0, Math.max(0, keys.length - 200))) delete state.cache[staleKey];
+    if (state.credentialGeneration !== credentialGeneration || state.settings.apiKey !== apiKey) return;
+    state.cache = normalizeCache({ [key]: entry, ...Object.fromEntries(Object.entries(state.cache).filter(([existingKey]) => existingKey !== key)) });
   });
 }

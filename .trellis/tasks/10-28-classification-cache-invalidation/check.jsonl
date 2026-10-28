@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Review classification, target validation and historical scan behavior"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Check persisted cache compatibility"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Review safety and verification commands"}
+{"file": ".trellis/tasks/10-28-classification-cache-invalidation/design.md", "reason": "Verify strict request identity and batch semantics"}

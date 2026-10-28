@@ -11,8 +11,11 @@ export function appendActivity(
 }
 
 export function pruneJobs(state: PersistedState): void {
+  const openReviewIds = new Set(Object.values(state.reviews)
+    .filter((review) => review.status === 'pending' || review.status === 'approving')
+    .map((review) => review.bookmarkId));
   const ids = Object.values(state.jobs)
-    .filter((job) => job.status !== 'pending_review')
+    .filter((job) => ['completed', 'failed', 'skipped'].includes(job.status) && !openReviewIds.has(job.bookmark.id))
     .sort((a, b) => a.updatedAt - b.updatedAt)
     .slice(0, Math.max(0, Object.keys(state.jobs).length - 250))
     .map((job) => job.bookmark.id);

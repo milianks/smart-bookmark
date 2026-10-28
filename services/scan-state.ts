@@ -8,10 +8,13 @@ export function refreshHistoricalScan(state: PersistedState, scanId: string, now
   const scanJobIds = new Set(jobs.map((job) => job.bookmark.id));
   const scanReviewIds = new Set(reviews.map((item) => item.bookmarkId));
   const alreadyCovered = scan.coveredIds.filter((id) => !scanJobIds.has(id) && !scanReviewIds.has(id)).length;
-  scan.processedCount = alreadyCovered + jobs.filter((job) => ['completed', 'failed', 'skipped', 'pending_review'].includes(job.status)).length;
+  const orphanReviews = reviews.filter((item) => scan.coveredIds.includes(item.bookmarkId) && !scanJobIds.has(item.bookmarkId));
+  scan.processedCount = alreadyCovered + jobs.filter((job) => ['completed', 'failed', 'skipped', 'pending_review'].includes(job.status)).length
+    + new Set(orphanReviews.map((item) => item.bookmarkId)).size;
   scan.pendingReviewCount = reviews.filter((item) => item.status === 'pending' || item.status === 'approving').length;
   scan.failedCount = jobs.filter((job) => job.status === 'failed').length;
-  scan.skippedCount = alreadyCovered + jobs.filter((job) => job.status === 'skipped').length;
+  scan.skippedCount = alreadyCovered + jobs.filter((job) => job.status === 'skipped').length
+    + new Set(orphanReviews.filter((item) => item.status === 'stale').map((item) => item.bookmarkId)).size;
   scan.updatedAt = now;
   const queued = jobs.some((job) => ['queued', 'processing', 'awaiting_configuration', 'awaiting_permission'].includes(job.status));
   if (queued) scan.status = 'scanning';

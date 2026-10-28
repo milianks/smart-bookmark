@@ -14,10 +14,17 @@ export class SettingsService {
 
   async updateSettings(patch: Partial<Omit<Settings, 'apiKey'>> & { apiKey?: string }): Promise<void> {
     await this.deps.store.update((state) => {
+      const apiKey = patch.apiKey?.trim() ? patch.apiKey.trim() : state.settings.apiKey;
+      if (apiKey !== state.settings.apiKey) {
+        if (state.credentialGeneration >= Number.MAX_SAFE_INTEGER) {
+          throw new Error('设置版本已达到上限，无法安全更换 API Key。');
+        }
+        state.credentialGeneration += 1;
+      }
       state.settings = {
         ...state.settings,
         ...patch,
-        apiKey: patch.apiKey?.trim() ? patch.apiKey.trim() : state.settings.apiKey,
+        apiKey,
       };
       if (!state.settings.enabled) {
         for (const job of Object.values(state.jobs)) {

@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICompatibleProvider } from '../lib/ai/openai-compatible';
+import { ChromeStateRepository, type LocalStorageArea } from '../lib/storage/repository';
+import { ClassificationService, PermissionRequiredError } from '../services/classifier.service';
+import { DEFAULT_SETTINGS } from '../types/domain';
 import type { ProviderConfig } from '../lib/ai/provider-config';
 import { buildClassificationMessages, type ClassificationInput } from '../lib/ai/prompts';
 
@@ -68,6 +71,8 @@ describe('OpenAICompatibleProvider', () => {
     expect(results).toHaveLength(2);
     expect(results[0]).toMatchObject({ reason: '第一个保留。' });
     expect(results[1]).toMatchObject({ reason: '第二个保留。' });
+    expect(results[0]).not.toHaveProperty('index');
+    expect(results[1]).not.toHaveProperty('index');
     expect(fetcher).toHaveBeenCalledOnce();
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({ max_tokens: 4000 });
   });
@@ -510,6 +515,374 @@ describe('OpenAICompatibleProvider', () => {
     expect(fetcher).toHaveBeenCalledTimes(3);
     const thirdBody = JSON.parse(String(fetcher.mock.calls[2]?.[1]?.body)) as { tools?: unknown };
     expect(thirdBody.tools).toBeUndefined();
+  });
+
+  it('default and fallback request variants only reuse proven matches across worker restarts', async () => {
+    const values: Record<string, unknown> = {};
+    const storage: LocalStorageArea = {
+      get: async (key) => ({ [key]: values[key] }),
+      set: async (items) => { Object.assign(values, structuredClone(items)); },
+    };
+    const response = () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }), { status: 200 });
+    const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key', baseUrl: baseConfig.baseUrl, model: baseConfig.model };
+    const candidates = [{ id: 'bar', name: 'Bookmarks bar', path: 'Bookmarks bar' }];
+    let providerCalls = 0;
+    const normalFetch = vi.fn<typeof fetch>(async () => response());
+    const repository = new ChromeStateRepository(storage);
+    await repository.update((state) => { state.settings = settings; });
+    const firstProvider = new OpenAICompatibleProvider(normalFetch);
+    const original = firstProvider.classify.bind(firstProvider);
+    firstProvider.classify = async (...args) => { providerCalls += 1; return original(...args); };
+    const service = new ClassificationService(firstProvider, repository);
+    expect((await service.classify(input, candidates, settings, true)).source).toBe('ai');
+    expect((await service.classify(input, candidates, settings, false)).source).toBe('cache');
+    const restarted = new ClassificationService(new OpenAICompatibleProvider(normalFetch), new ChromeStateRepository(storage));
+    expect((await restarted.classify(input, candidates, settings, false)).source).toBe('cache');
+    expect(providerCalls).toBe(1);
+    expect(normalFetch).toHaveBeenCalledTimes(1);
+
+    const fallbackValues: Record<string, unknown> = {};
+    const fallbackStorage: LocalStorageArea = {
+      get: async (key) => ({ [key]: fallbackValues[key] }),
+      set: async (items) => { Object.assign(fallbackValues, structuredClone(items)); },
+    };
+    const fallbackFetch = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown };
+      return body.tools ? new Response('{}', { status: 400 }) : response();
+    });
+    const fallbackRepo = new ChromeStateRepository(fallbackStorage);
+    await fallbackRepo.update((state) => { state.settings = settings; });
+    let fallbackProviderCalls = 0;
+    const fallbackProvider = new OpenAICompatibleProvider(fallbackFetch);
+    const fallbackClassify = fallbackProvider.classify.bind(fallbackProvider);
+    fallbackProvider.classify = async (...args) => { fallbackProviderCalls += 1; return fallbackClassify(...args); };
+    const fallbackService = new ClassificationService(fallbackProvider, fallbackRepo);
+    expect((await fallbackService.classify(input, candidates, settings, true)).source).toBe('ai');
+    expect(fallbackFetch).toHaveBeenCalledTimes(3);
+    expect((await fallbackService.classify(input, candidates, settings, true)).source).toBe('ai');
+    expect((await fallbackService.classify(input, candidates, settings, false)).source).toBe('cache');
+    expect(fallbackProviderCalls).toBe(2);
+    expect(fallbackFetch).toHaveBeenCalledTimes(4);
+    const fallbackRestarted = new ClassificationService(new OpenAICompatibleProvider(fallbackFetch), new ChromeStateRepository(fallbackStorage));
+    await expect(fallbackRestarted.classify(input, candidates, settings, false)).rejects.toThrow('网络权限');
+    expect((await fallbackRestarted.classify(input, candidates, settings, true)).source).toBe('ai');
+    expect(fallbackFetch).toHaveBeenCalledTimes(7);
+  });
+
+  it.each(['single', 'batch'] as const)('rejects a stale %s cache hit when a concurrent real provider call changes the expected variant during signing', async (mode) => {
+    const values: Record<string, unknown> = {};
+    const storage: LocalStorageArea = { get: async (key) => ({ [key]: values[key] }), set: async (items) => { Object.assign(values, structuredClone(items)); } };
+    let rejectTools = false;
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown; max_tokens?: number };
+      if (rejectTools && body.tools) return new Response('{}', { status: 400 });
+      const data = body.max_tokens === 4000 ? { results: [{ index: 0, ...result }, { index: 1, ...result }] } : result;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(data) } }] }), { status: 200 });
+    });
+    const provider = new OpenAICompatibleProvider(fetcher);
+    const repository = new ChromeStateRepository(storage);
+    const service = new ClassificationService(provider, repository);
+    const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key', baseUrl: baseConfig.baseUrl, model: baseConfig.model };
+    const candidates = [{ id: 'bar', name: 'Bookmarks bar', path: 'Bookmarks bar' }];
+    const inputs = [input, { ...input, url: 'https://example.com/other' }];
+    const config = { ...baseConfig, protocol: 'openai-chat-completions' as const };
+    const classify = (permission: boolean) => mode === 'single'
+      ? service.classify(input, candidates, settings, permission)
+      : service.classifyBatch(inputs, candidates, settings, permission);
+    await repository.update((state) => { state.settings = settings; });
+    await classify(true);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    const subtle = globalThis.crypto.subtle;
+    const originalSign = subtle.sign.bind(subtle);
+    let enterSign!: () => void;
+    let releaseSign!: () => void;
+    const entered = new Promise<void>((resolve) => { enterSign = resolve; });
+    const released = new Promise<void>((resolve) => { releaseSign = resolve; });
+    const sign = vi.spyOn(subtle, 'sign').mockImplementationOnce(async (...args) => {
+      enterSign();
+      await released;
+      return originalSign(...args);
+    });
+    try {
+      const pending = classify(false);
+      const outcome = pending.then((value) => ({ value }), (error: unknown) => ({ error }));
+      await entered;
+      rejectTools = true;
+      await provider.classify({ ...input, url: 'https://other.example/change' }, candidates, config);
+      expect(fetcher).toHaveBeenCalledTimes(4);
+      releaseSign();
+      expect(await outcome).toEqual({ error: expect.any(PermissionRequiredError) });
+      expect(fetcher).toHaveBeenCalledTimes(4);
+      const after = await classify(true);
+      if (Array.isArray(after)) {
+        expect(after.map((item) => 'result' in item && item.result.source)).toEqual(['ai', 'ai']);
+      } else {
+        expect(after.source).toBe('ai');
+      }
+      const requestBody = JSON.parse(String(fetcher.mock.calls[4]?.[1]?.body)) as { tools?: unknown; max_tokens?: number };
+      expect(requestBody.tools).toBeUndefined();
+      expect(requestBody.max_tokens).toBe(mode === 'single' ? 500 : 4000);
+      expect(fetcher).toHaveBeenCalledTimes(5);
+    } finally {
+      releaseSign();
+      sign.mockRestore();
+    }
+  });
+
+  it.each([
+    { mode: 'single' as const, oldCached: true, permission: false },
+    { mode: 'single' as const, oldCached: false, permission: false },
+    { mode: 'single' as const, oldCached: true, permission: true },
+    { mode: 'batch' as const, oldCached: true, permission: false },
+    { mode: 'batch' as const, oldCached: false, permission: false },
+    { mode: 'batch' as const, oldCached: true, permission: true },
+  ])('rechecks the new $mode variant cache after a concurrent downgrade (oldCached=$oldCached, permission=$permission)', async ({ mode, oldCached, permission }) => {
+    const values: Record<string, unknown> = {};
+    const storage: LocalStorageArea = { get: async (key) => ({ [key]: values[key] }), set: async (items) => { Object.assign(values, structuredClone(items)); } };
+    let rejectTools = false;
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown; max_tokens?: number };
+      if (rejectTools && body.tools) return new Response('{}', { status: 400 });
+      const response = { ...result, reason: body.tools ? 'default variant' : 'fallback variant' };
+      const data = body.max_tokens === 4000 ? { results: [{ index: 0, ...response }, { index: 1, ...response }] } : response;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(data) } }] }), { status: 200 });
+    });
+    const repository = new ChromeStateRepository(storage);
+    const provider = new OpenAICompatibleProvider(fetcher);
+    const fallbackProvider = new OpenAICompatibleProvider(fetcher);
+    const service = new ClassificationService(provider, repository);
+    const fallbackService = new ClassificationService(fallbackProvider, repository);
+    const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key', baseUrl: baseConfig.baseUrl, model: baseConfig.model };
+    const candidates = [{ id: 'bar', name: 'Bookmarks bar', path: 'Bookmarks bar' }];
+    const inputs = [input, { ...input, url: 'https://example.com/other' }];
+    const config = { ...baseConfig, protocol: 'openai-chat-completions' as const };
+    const classify = (target: ClassificationService, hasPermission: boolean) => mode === 'single'
+      ? target.classify(input, candidates, settings, hasPermission)
+      : target.classifyBatch(inputs, candidates, settings, hasPermission);
+    await repository.update((state) => { state.settings = settings; });
+    if (oldCached) await classify(service, true);
+    rejectTools = true;
+    await fallbackProvider.classify({ ...input, url: 'https://other.example/prepare' }, candidates, config);
+    await classify(fallbackService, true);
+    expect(Object.keys((await repository.load()).cache)).toHaveLength(oldCached ? 2 : 1);
+
+    const subtle = globalThis.crypto.subtle;
+    const originalSign = subtle.sign.bind(subtle);
+    let enterSign!: () => void;
+    let releaseSign!: () => void;
+    const entered = new Promise<void>((resolve) => { enterSign = resolve; });
+    const released = new Promise<void>((resolve) => { releaseSign = resolve; });
+    const sign = vi.spyOn(subtle, 'sign').mockImplementationOnce(async (...args) => {
+      enterSign();
+      await released;
+      return originalSign(...args);
+    });
+    try {
+      const pending = classify(service, permission);
+      const outcome = pending.then((value) => ({ value }), (error: unknown) => ({ error }));
+      await entered;
+      await provider.classify({ ...input, url: 'https://other.example/change' }, candidates, config);
+      const callsAfterDowngrade = fetcher.mock.calls.length;
+      releaseSign();
+      const settled = await outcome;
+      expect(settled).toHaveProperty('value');
+      if ('value' in settled && Array.isArray(settled.value)) {
+        expect(settled.value.map((item) => 'result' in item && [item.result.source, item.result.result.reason]))
+          .toEqual([['cache', 'fallback variant'], ['cache', 'fallback variant']]);
+      } else if ('value' in settled) {
+        expect(settled.value).toMatchObject({ source: 'cache', result: { reason: 'fallback variant' } });
+      }
+      expect(sign).toHaveBeenCalledTimes(2);
+      expect(fetcher).toHaveBeenCalledTimes(callsAfterDowngrade);
+    } finally {
+      releaseSign();
+      sign.mockRestore();
+    }
+  });
+
+  it('invalidates a paused cache hit when another request only disables reasoning', async () => {
+    const values: Record<string, unknown> = {};
+    const storage: LocalStorageArea = { get: async (key) => ({ [key]: values[key] }), set: async (items) => { Object.assign(values, structuredClone(items)); } };
+    let rejectReasoning = false;
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { reasoning_effort?: string };
+      if (rejectReasoning && body.reasoning_effort) return new Response('{}', { status: 400 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }), { status: 200 });
+    });
+    const provider = new OpenAICompatibleProvider(fetcher);
+    const repository = new ChromeStateRepository(storage);
+    const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key', baseUrl: baseConfig.baseUrl, model: baseConfig.model };
+    const candidates = [{ id: 'bar', name: 'Bookmarks bar', path: 'Bookmarks bar' }];
+    const service = new ClassificationService(provider, repository);
+    await repository.update((state) => { state.settings = settings; });
+    await service.classify(input, candidates, settings, true);
+    const subtle = globalThis.crypto.subtle;
+    const originalSign = subtle.sign.bind(subtle);
+    let enterSign!: () => void;
+    let releaseSign!: () => void;
+    const entered = new Promise<void>((resolve) => { enterSign = resolve; });
+    const released = new Promise<void>((resolve) => { releaseSign = resolve; });
+    const sign = vi.spyOn(subtle, 'sign').mockImplementationOnce(async (...args) => {
+      enterSign();
+      await released;
+      return originalSign(...args);
+    });
+    try {
+      const pending = service.classify(input, candidates, settings, false);
+      const outcome = pending.then((value) => ({ value }), (error: unknown) => ({ error }));
+      await entered;
+      rejectReasoning = true;
+      await provider.classify({ ...input, url: 'https://other.example/change' }, candidates, { ...baseConfig, protocol: 'openai-chat-completions' });
+      expect(fetcher).toHaveBeenCalledTimes(3);
+      releaseSign();
+      expect(await outcome).toEqual({ error: expect.any(PermissionRequiredError) });
+      expect((await service.classify(input, candidates, settings, true)).source).toBe('ai');
+      const body = JSON.parse(String(fetcher.mock.calls[3]?.[1]?.body)) as { tools?: unknown; reasoning_effort?: string };
+      expect(body.tools).toBeDefined();
+      expect(body.reasoning_effort).toBeUndefined();
+    } finally {
+      releaseSign();
+      sign.mockRestore();
+    }
+  });
+
+  it.each(['single', 'batch'] as const)('validates the transient %s cache variant after a real provider fallback', async (mode) => {
+    const values: Record<string, unknown> = {};
+    const storage: LocalStorageArea = { get: async (key) => ({ [key]: values[key] }), set: async (items) => { Object.assign(values, structuredClone(items)); } };
+    let rejectTools = false;
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown; max_tokens?: number };
+      if (rejectTools && body.tools) return new Response('{}', { status: 400 });
+      const data = body.max_tokens === 4000 ? { results: [{ index: 0, ...result }, { index: 1, ...result }] } : result;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(data) } }] }), { status: 200 });
+    });
+    const provider = new OpenAICompatibleProvider(fetcher);
+    const repo = new ChromeStateRepository(storage);
+    const service = new ClassificationService(provider, repo);
+    const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key', baseUrl: baseConfig.baseUrl, model: baseConfig.model };
+    const candidates = [{ id: 'bar', name: 'Bookmarks bar', path: 'Bookmarks bar' }];
+    const inputs = [input, { ...input, url: 'https://example.com/other' }];
+    await repo.update((state) => { state.settings = settings; });
+    const classify = (permission: boolean) => mode === 'single'
+      ? service.classify(input, candidates, settings, permission)
+      : service.classifyBatch(inputs, candidates, settings, permission);
+    const fresh = await classify(true);
+    const warm = await classify(false);
+    const cached = Array.isArray(warm)
+      ? warm.map((item) => 'result' in item ? item.result : undefined)
+      : [warm];
+    expect(cached.every((item) => item?.source === 'cache' && item.cacheValidation?.() === true)).toBe(true);
+    if (cached.length > 1) expect(cached[0]?.cacheValidation).toBe(cached[1]?.cacheValidation);
+    if (Array.isArray(fresh)) {
+      expect(fresh.every((item) => 'result' in item && item.result.source === 'ai' && !item.result.cacheValidation)).toBe(true);
+    } else {
+      expect(fresh.source).toBe('ai');
+      expect(fresh.cacheValidation).toBeUndefined();
+    }
+    expect(JSON.stringify(warm)).not.toContain('test-key');
+    expect(JSON.stringify(warm)).not.toContain(input.url);
+    expect(JSON.stringify(await repo.load())).not.toContain('cacheValidation');
+    rejectTools = true;
+    await provider.classify({ ...input, url: 'https://other.example/change' }, candidates, { ...baseConfig, protocol: 'openai-chat-completions' });
+    expect(cached.every((item) => item?.cacheValidation?.() === false)).toBe(true);
+  });
+
+  it('keeps a cached token stable for an equivalent same-shape concurrent fallback', async () => {
+    const values: Record<string, unknown> = {};
+    const storage: LocalStorageArea = { get: async (key) => ({ [key]: values[key] }), set: async (items) => { Object.assign(values, structuredClone(items)); } };
+    let releaseReject!: () => void;
+    const rejected = new Promise<void>((resolve) => { releaseReject = resolve; });
+    let enterReject!: () => void;
+    const entered = new Promise<void>((resolve) => { enterReject = resolve; });
+    let waiting = false;
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown };
+      if (body.tools && !waiting) {
+        waiting = true;
+        enterReject();
+        await rejected;
+        return new Response('{}', { status: 400 });
+      }
+      if (body.tools) return new Response('{}', { status: 400 });
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(result) } }] }), { status: 200 });
+    });
+    const provider = new OpenAICompatibleProvider(fetcher);
+    const config = { ...baseConfig, protocol: 'openai-chat-completions' as const };
+    const candidates = [{ id: 'bar', name: 'Bookmarks bar', path: 'Bookmarks bar' }];
+    const slow = provider.classify({ ...input, url: 'https://slow.example/' }, candidates, config);
+    try {
+      await entered;
+      await provider.classify({ ...input, url: 'https://fast.example/' }, candidates, config);
+      expect(provider.getCacheVariant()).toBe(2);
+      const repo = new ChromeStateRepository(storage);
+      const settings = { ...DEFAULT_SETTINGS, ...config };
+      await repo.update((state) => { state.settings = settings; });
+      const service = new ClassificationService(provider, repo);
+      await service.classify(input, candidates, settings, true);
+      const cached = await service.classify(input, candidates, settings, false);
+      expect(cached.cacheValidation?.()).toBe(true);
+      releaseReject();
+      await slow;
+      expect(provider.getCacheVariant()).toBe(2);
+      expect(cached.cacheValidation?.()).toBe(true);
+    } finally {
+      releaseReject();
+      await slow;
+    }
+  });
+
+  it('real batch fallback warm cache is reused after restart only after the variant is re-established', async () => {
+    const values: Record<string, unknown> = {};
+    const storage: LocalStorageArea = { get: async (key) => ({ [key]: values[key] }), set: async (items) => { Object.assign(values, structuredClone(items)); } };
+    const fetcher = vi.fn<typeof fetch>(async (_url, init) => {
+      const body = JSON.parse(String(init?.body)) as { tools?: unknown; max_tokens?: number };
+      if (body.tools) return new Response('{}', { status: 400 });
+      const data = body.max_tokens === 4000 ? { results: [{ index: 0, ...result }, { index: 1, ...result }] } : result;
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(data) } }] }), { status: 200 });
+    });
+    const repo = new ChromeStateRepository(storage);
+    const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key', baseUrl: baseConfig.baseUrl, model: baseConfig.model };
+    const candidates = [{ id: 'bar', name: 'Bookmarks bar', path: 'Bookmarks bar' }];
+    const inputs = [input, { ...input, url: 'https://example.com/other' }];
+    await repo.update((state) => { state.settings = settings; });
+    const provider = new OpenAICompatibleProvider(fetcher);
+    const classifyBatch = vi.spyOn(provider, 'classifyBatch');
+    const service = new ClassificationService(provider, repo);
+    expect((await service.classifyBatch(inputs, candidates, settings, true)).every((item) => 'result' in item && item.result.source === 'ai')).toBe(true);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect((await service.classifyBatch(inputs, candidates, settings, true)).every((item) => 'result' in item && item.result.source === 'ai')).toBe(true);
+    expect((await service.classifyBatch(inputs, candidates, settings, false)).every((item) => 'result' in item && item.result.source === 'cache' && item.result.cacheValidation?.())).toBe(true);
+    expect(classifyBatch).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(4);
+    const restartedProvider = new OpenAICompatibleProvider(fetcher);
+    const restartedBatch = vi.spyOn(restartedProvider, 'classifyBatch');
+    const restarted = new ClassificationService(restartedProvider, new ChromeStateRepository(storage));
+    await expect(restarted.classifyBatch(inputs, candidates, settings, false)).rejects.toBeInstanceOf(PermissionRequiredError);
+    expect(restartedBatch).not.toHaveBeenCalled();
+    expect((await restarted.classifyBatch(inputs, candidates, settings, true)).every((item) => 'result' in item && item.result.source === 'ai')).toBe(true);
+    expect(restartedBatch).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledTimes(7);
+    expect((await restarted.classifyBatch(inputs, candidates, settings, false)).every((item) => 'result' in item && item.result.source === 'cache' && item.result.cacheValidation?.())).toBe(true);
+    expect(restartedBatch).toHaveBeenCalledOnce();
+    expect(fetcher).toHaveBeenCalledTimes(7);
+  });
+
+  it('batch transport index is removed before caching strict real provider results', async () => {
+    const values: Record<string, unknown> = {};
+    const storage: LocalStorageArea = { get: async (key) => ({ [key]: values[key] }), set: async (items) => { Object.assign(values, structuredClone(items)); } };
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ results: [
+      { index: 1, ...result }, { index: 0, ...result },
+    ] }) } }] }), { status: 200 }));
+    const service = new ClassificationService(new OpenAICompatibleProvider(fetcher), new ChromeStateRepository(storage));
+    const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key' };
+    const candidates = [{ id: 'bar', name: 'Bookmarks bar', path: 'Bookmarks bar' }];
+    const inputs = [input, { ...input, url: 'https://example.com/other' }];
+    const first = await service.classifyBatch(inputs, candidates, settings, true);
+    const second = await service.classifyBatch(inputs, candidates, settings, false);
+    expect(first.map((outcome) => 'result' in outcome && outcome.result.source)).toEqual(['ai', 'ai']);
+    expect(second.map((outcome) => 'result' in outcome && outcome.result.source)).toEqual(['cache', 'cache']);
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it('响应被 max_tokens 截断时给出可重试的独立错误', async () => {

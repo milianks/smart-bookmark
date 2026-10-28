@@ -1,4 +1,7 @@
 import {
+  CACHE_ENTRY_MAX_BYTES,
+  CACHE_RESULT_LIMIT,
+  CacheEntrySchema,
   DEFAULT_SETTINGS,
   SettingsSchema,
   SettingsDraftSchema,
@@ -11,6 +14,8 @@ import {
 import { hostnameKey } from '../utils/ids';
 
 const STORAGE_KEY = 'ai-bookmark-manager.state.v1';
+// Legacy repository writes rebuild settings from a whitelist, dropping this marker.
+const CACHE_SETTINGS_EPOCH = '_classificationCacheEpoch';
 
 export interface StateRepository {
   load(): Promise<PersistedState>;
@@ -37,7 +42,10 @@ export class ChromeStateRepository implements StateRepository {
       const state = await this.readNow();
       mutator(state);
       const validated = normalizeState(state);
-      await this.storage.set({ [STORAGE_KEY]: validated });
+      await this.storage.set({ [STORAGE_KEY]: {
+        ...validated,
+        settings: { ...validated.settings, [CACHE_SETTINGS_EPOCH]: validated.credentialGeneration },
+      } });
       return structuredClone(validated);
     });
     this.writeChain = operation.then(() => undefined, () => undefined);
@@ -48,13 +56,21 @@ export class ChromeStateRepository implements StateRepository {
     const record = await this.storage.get(STORAGE_KEY);
     const stored = record[STORAGE_KEY];
     if (!stored || typeof stored !== 'object') return emptyPersistedState();
-    return normalizeState(stored as Partial<PersistedState>);
+    const input = stored as Partial<PersistedState>;
+    const settings = input.settings;
+    const hasCacheEpoch = Boolean(settings && typeof settings === 'object' && !Array.isArray(settings)
+      && Object.prototype.hasOwnProperty.call(settings, CACHE_SETTINGS_EPOCH)
+      && (settings as unknown as Record<string, unknown>)[CACHE_SETTINGS_EPOCH] === input.credentialGeneration);
+    const state = normalizeState(input);
+    if (!hasCacheEpoch) state.cache = {};
+    return state;
   }
 }
 
 function normalizeState(input: Partial<PersistedState>): PersistedState {
   const defaults = emptyPersistedState();
   const settings = normalizeSettings(input.settings);
+  const validCredentialGeneration = Number.isSafeInteger(input.credentialGeneration) && (input.credentialGeneration ?? -1) >= 0;
   const smartBookmarkRootId = typeof input.smartBookmarkRootId === 'string' && input.smartBookmarkRootId.trim().length > 0
     ? input.smartBookmarkRootId.trim()
     : undefined;
@@ -65,9 +81,10 @@ function normalizeState(input: Partial<PersistedState>): PersistedState {
     smartBookmarkRootId,
     smartBookmarkInitialized: input.smartBookmarkInitialized === true && Boolean(smartBookmarkRootId),
     settings,
+    credentialGeneration: validCredentialGeneration ? input.credentialGeneration! : 0,
     jobs: input.jobs && typeof input.jobs === 'object' ? input.jobs : {},
     reviews: input.reviews && typeof input.reviews === 'object' ? input.reviews : {},
-    cache: input.cache && typeof input.cache === 'object' ? input.cache : {},
+    cache: validCredentialGeneration ? normalizeCache(input.cache) : {},
     activities: Array.isArray(input.activities) ? input.activities.slice(-100) : [],
     historicalScan: normalizeHistoricalScan(input.historicalScan),
     lastHistoricalUndo: normalizeHistoricalUndo(input.lastHistoricalUndo),
@@ -80,6 +97,26 @@ function normalizeState(input: Partial<PersistedState>): PersistedState {
       ? { settingsDraft: SettingsDraftSchema.parse(input.settingsDraft) }
       : {}),
   };
+}
+
+export function normalizeCache(input: unknown): PersistedState['cache'] {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const entries: Array<[string, PersistedState['cache'][string]]> = [];
+  for (const [key, value] of Object.entries(input)) {
+    const parsed = CacheEntrySchema.safeParse(value);
+    if (!parsed.success || parsed.data.key !== key) continue;
+    if (new TextEncoder().encode(JSON.stringify(parsed.data)).byteLength > CACHE_ENTRY_MAX_BYTES) continue;
+    entries.push([key, parsed.data]);
+  }
+  entries.sort((a, b) => b[1].createdAt - a[1].createdAt);
+  const selected: Array<[string, PersistedState['cache'][string]]> = [];
+  let count = 0;
+  for (const [key, entry] of entries) {
+    if (count + entry.results.length > CACHE_RESULT_LIMIT) break;
+    selected.push([key, entry]);
+    count += entry.results.length;
+  }
+  return Object.fromEntries(selected);
 }
 
 function normalizeBookmarkMetadata(input: unknown): PersistedState['bookmarkMetadata'] {

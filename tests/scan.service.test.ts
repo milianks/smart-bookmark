@@ -67,6 +67,28 @@ describe('ScanService', () => {
     expect(state.historicalScan?.status).toBe('completed');
   });
 
+  it.each(['pending', 'approving'] as const)('旧数据的孤立 %s 审核阻止扫描提前完成', async (status) => {
+    const initial = emptyPersistedState();
+    initial.historicalScan = {
+      id: 'legacy', status: 'scanning', startedAt: 1, updatedAt: 1,
+      eligibleTotal: 1, processedCount: 0, pendingReviewCount: 0,
+      failedCount: 0, skippedCount: 0, coveredIds: ['b1'], forceOrganize: false,
+    };
+    initial.reviews.b1 = {
+      id: 'b1', bookmarkId: 'b1', title: 'Bookmark', url: 'https://example.test/a', sourceParentId: 'smart-root',
+      classification: { action: 'keep', confidence: 0.7, reason: 'test' }, source: 'rule',
+      createdAt: 1, status, scanId: 'legacy',
+    };
+    const store = new MemoryStateRepository(initial);
+    const scan = new ScanService({ bookmarks, store, processPending: async () => {}, approveReview: async () => {} });
+
+    await scan.refresh('legacy');
+
+    expect((await store.load()).historicalScan).toMatchObject({
+      status: 'awaiting_review', processedCount: 1, pendingReviewCount: 1, skippedCount: 0,
+    });
+  });
+
   it('重复 URL 归并标记 duplicateOf，保留最早添加的一条', async () => {
     const dupTree: BookmarkNode[] = [{ id: 'root', title: '', children: [{
       id: 'bar', title: 'Bookmarks bar', folderType: 'bookmarks-bar', children: [
