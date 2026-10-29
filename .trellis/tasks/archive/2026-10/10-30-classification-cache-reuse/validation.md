@@ -48,3 +48,7 @@ Historical coverage clears jobs/reviews before proving warm cache reuse. The imm
 No Chrome extension smoke test or real model request was performed. Divergent candidates can split one processing batch into multiple requests. Single and complete-batch representations share the unchanged 200-result budget, so duplicate representations can evict earlier. A missing/duplicate-index or other untrustworthy provider response still fails as a whole; no parser salvage was added.
 
 No dependencies, UI, configuration switches, organizer product logic, scan scope, or page-content collection were changed. At the validation checkpoint no commit, archive, or publish action had been taken. Commit/push and task archive were authorized in a subsequent user message.
+
+## Delivery authorization and push
+
+The user subsequently authorized commit/push and task archive. Work commit `b9817e4` was pushed to `origin/master`. The repository pre-push hook reran typecheck, all 248 tests in 12 files, and the production build successfully. This task was developed directly on master without a PR; archive uses the documented `--skip-branch-validation` option for that case. Release publishing remains outside scope.
