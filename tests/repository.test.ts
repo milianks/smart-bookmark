@@ -210,6 +210,8 @@ describe('ChromeStateRepository', () => {
     const stored = values[STORAGE_KEY] as { cache: Record<string, unknown> };
     stored.cache.old = { key: 'old', result: valid.result, source: 'ai', createdAt: 1 };
     stored.cache['bad-index'] = { ...valid, key: 'bad-index' };
+    const previousKey = valid.key.replace('v3:', 'v2:');
+    stored.cache[previousKey] = { ...valid, key: previousKey, version: 2 };
     expect(Object.keys((await repo.load()).cache)).toEqual([valid.key]);
     await repo.update((state) => { state.activities = []; });
     const written = values[STORAGE_KEY] as Record<string, unknown>;
@@ -357,6 +359,6 @@ class LegacySettingsService {
 
 function makeEntry(mode: 'single' | 'batch', id: number, count: number, createdAt: number): CacheEntry {
   const result = { action: 'keep' as const, confidence: 0.5, reason: 'valid' };
-  const key = `classification-v2:${mode}:${id.toString(16).padStart(64, '0')}`;
-  return { key, mode, version: 2, source: 'ai', result, results: Array.from({ length: count }, () => ({ ...result })), createdAt };
+  const key = `classification-v3:${mode}:${id.toString(16).padStart(64, '0')}`;
+  return { key, mode, version: 3, source: 'ai', result, results: Array.from({ length: count }, () => ({ ...result })), createdAt };
 }

@@ -525,7 +525,7 @@ describe('OrganizerService', () => {
     expect(bookmarks.moves).toHaveLength(0);
   });
 
-  it('历史扫描真实缓存区分任务去重，按完整批次复用并保持结果顺序', async () => {
+  it('历史扫描真实缓存区分任务去重，逐条复用并保持结果顺序', async () => {
     const existing = bookmarks.nodes.get('b1')!;
     existing.title = 'Entry 00';
     existing.url = 'https://site-00.example.test/item';
@@ -607,8 +607,8 @@ describe('OrganizerService', () => {
     await historicalScan.startHistoricalScan();
     await waitForScan();
     expect(classifyBatch).toHaveBeenCalledTimes(6);
-    expect(calls.map((batch) => batch.length)).toEqual([15, 15, 15]);
-    expect(calls[2]?.[7]).toBe('Changed entry');
+    expect(calls.map((batch) => batch.length)).toEqual([15, 15, 1]);
+    expect(calls[2]).toEqual(['Changed entry']);
     const finalState = await store.load();
     expect(finalState.jobs.b8).toMatchObject({ classificationSource: 'ai', classification: { reason: 'result:Changed entry' } });
     expect(finalState.jobs.b16).toMatchObject({ classificationSource: 'cache', classification: { reason: 'result:Entry 15' } });

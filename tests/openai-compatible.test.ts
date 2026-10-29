@@ -4,7 +4,7 @@ import { ChromeStateRepository, type LocalStorageArea } from '../lib/storage/rep
 import { ClassificationService, PermissionRequiredError } from '../services/classifier.service';
 import { DEFAULT_SETTINGS } from '../types/domain';
 import type { ProviderConfig } from '../lib/ai/provider-config';
-import { buildClassificationMessages, type ClassificationInput } from '../lib/ai/prompts';
+import { buildBatchMessages, buildClassificationMessages, type ClassificationInput } from '../lib/ai/prompts';
 
 const input: ClassificationInput = {
   title: 'Untrusted page title',
@@ -43,6 +43,9 @@ describe('OpenAICompatibleProvider', () => {
     expect(messages[0]?.content).toContain('泛目录只有在没有任何具体主题目录匹配时才可选');
     expect(messages[1]?.content).toContain('react.dev');
     expect(messages[1]?.content).toContain('samples');
+    const batch = buildBatchMessages([input, { ...input, url: 'https://example.com/other' }], []);
+    expect(batch[0]?.content).toContain('每条书签独立判断');
+    expect(batch[0]?.content).not.toContain('同一批中主题相近的书签应归入同一目录');
   });
 
   it('最近用户纠错作为历史决定进入分类提示', () => {
@@ -87,6 +90,22 @@ describe('OpenAICompatibleProvider', () => {
 
     await expect(provider.classifyBatch([input, input], [], { ...baseConfig, protocol: 'openai-chat-completions' }))
       .rejects.toThrow('AI 批量结果缺少某些书签');
+  });
+
+  it('does not cache any member when the real provider returns duplicate indexes', async () => {
+    const values: Record<string, unknown> = {};
+    const repository = new ChromeStateRepository({
+      get: async (key) => ({ [key]: values[key] }),
+      set: async (items) => { Object.assign(values, structuredClone(items)); },
+    });
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ results: [
+      { index: 0, ...result }, { index: 0, ...result },
+    ] }) } }] }), { status: 200 }));
+    const service = new ClassificationService(new OpenAICompatibleProvider(fetcher), repository);
+    await expect(service.classifyBatch([input, { ...input, url: 'https://example.com/other' }], [], { ...DEFAULT_SETTINGS, apiKey: 'test-key' }, true))
+      .rejects.toThrow('AI 批量结果 index 不完整或重复');
+    expect((await repository.load()).cache).toEqual({});
+    expect(fetcher).toHaveBeenCalledOnce();
   });
 
   it.each([
@@ -665,7 +684,7 @@ describe('OpenAICompatibleProvider', () => {
     rejectTools = true;
     await fallbackProvider.classify({ ...input, url: 'https://other.example/prepare' }, candidates, config);
     await classify(fallbackService, true);
-    expect(Object.keys((await repository.load()).cache)).toHaveLength(oldCached ? 2 : 1);
+    expect(Object.keys((await repository.load()).cache)).toHaveLength((oldCached ? 2 : 1) * (mode === 'batch' ? 3 : 1));
 
     const subtle = globalThis.crypto.subtle;
     const originalSign = subtle.sign.bind(subtle);
@@ -693,7 +712,7 @@ describe('OpenAICompatibleProvider', () => {
       } else if ('value' in settled) {
         expect(settled.value).toMatchObject({ source: 'cache', result: { reason: 'fallback variant' } });
       }
-      expect(sign).toHaveBeenCalledTimes(2);
+      expect(sign).toHaveBeenCalledTimes(mode === 'single' ? 2 : 3);
       expect(fetcher).toHaveBeenCalledTimes(callsAfterDowngrade);
     } finally {
       releaseSign();

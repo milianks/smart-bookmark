@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Preserve request provenance, variant, credential, permission and live mutation safeguards; revise obsolete whole-batch policy according to approved task artifacts."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Strict validation, existing ports, safe failure behavior and required quality gate."}
+{"file": ".trellis/tasks/10-30-classification-cache-reuse/research.md", "reason": "Independent classification decision, candidate grouping, partial failure limits, capacity and trustworthy provenance."}

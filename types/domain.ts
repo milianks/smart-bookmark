@@ -232,15 +232,15 @@ export const CACHE_RESULT_LIMIT = 200;
 export const CACHE_ENTRY_MAX_BYTES = 64 * 1024;
 
 export const CacheEntrySchema = z.object({
-  key: z.string().regex(/^classification-v2:(single|batch):[0-9a-f]{64}$/),
+  key: z.string().regex(/^classification-v3:(single|batch):[0-9a-f]{64}$/),
   result: ClassificationResultSchema,
   source: z.literal('ai'),
   createdAt: z.number().finite().nonnegative(),
-  version: z.literal(2),
+  version: z.literal(3),
   mode: z.enum(['single', 'batch']),
   results: z.array(ClassificationResultSchema).min(1).max(CACHE_RESULT_LIMIT),
 }).strict().superRefine((entry, context) => {
-  if (!entry.key.startsWith(`classification-v2:${entry.mode}:`)
+  if (!entry.key.startsWith(`classification-v3:${entry.mode}:`)
     || (entry.mode === 'single' && entry.results.length !== 1)
     || JSON.stringify(entry.result) !== JSON.stringify(entry.results[0])) {
     context.addIssue({ code: 'custom', message: 'Invalid classification cache entry' });
