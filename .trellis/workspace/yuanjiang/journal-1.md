@@ -333,3 +333,35 @@ Added account-named Chrome smart bookmark root with default folders and strict r
 ### Next Steps
 
 - Chrome 实机与真实服务商调用尚未验证；本轮未推送远端。
+
+
+## Session 14: 单条与批量分类缓存互通
+<!-- trellis-session: v=2 fp=e7652c0df79d7178 -->
+
+**Date**: 2026-10-30
+**Task**: 单条与批量分类缓存互通
+**Branch**: `master`
+
+### Summary
+
+逐条缓存跨单条与批量复用，仅请求未命中项；独立候选分组合批，保留请求来源、凭据与变体校验。代码已推送，任务已归档。
+
+### Main Changes
+
+- 新增跨批次及双向缓存复用，历史扫描变更批次从15条降为1条
+- 缓存升级v3，保留容量与安全校验，同步README和运行时规范
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b9817e4` | fix(classifier): 复用单条与批量分类缓存 |
+
+### Testing
+
+- [OK] pnpm typecheck、248项测试、pnpm build、git diff --check全部通过；pre-push再次验证通过
+- [OK] 未运行Chrome或真实模型
+
+### Status
+
+[OK] **Completed**
