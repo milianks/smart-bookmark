@@ -9,26 +9,33 @@ interface NoticeProps {
   className?: string;
 }
 
-const tones: Record<NoticeTone, { role: 'status' | 'alert'; className: string }> = {
+const tones: Record<NoticeTone, { role: 'status' | 'alert'; className: string; dotClass: string }> = {
   success: {
     role: 'status',
-    className: 'border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900 dark:bg-emerald-950/50 dark:text-emerald-200',
+    className: 'border-emerald-200/90 bg-emerald-50/90 text-emerald-900 dark:border-emerald-800/70 dark:bg-emerald-950/60 dark:text-emerald-200',
+    dotClass: 'bg-emerald-500',
   },
   error: {
     role: 'alert',
-    className: 'border-rose-200 bg-rose-50 text-rose-800 dark:border-rose-900 dark:bg-rose-950/50 dark:text-rose-200',
+    className: 'border-rose-200/90 bg-rose-50/90 text-rose-900 dark:border-rose-800/70 dark:bg-rose-950/60 dark:text-rose-200',
+    dotClass: 'bg-rose-500',
   },
   warning: {
     role: 'status',
-    className: 'border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-200',
+    className: 'border-amber-200/90 bg-amber-50/90 text-amber-900 dark:border-amber-800/70 dark:bg-amber-950/60 dark:text-amber-200',
+    dotClass: 'bg-amber-500',
   },
   info: {
     role: 'status',
-    className: 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200',
+    className: 'border-violet-200/70 bg-violet-50/60 text-slate-700 dark:border-violet-900/60 dark:bg-violet-950/40 dark:text-slate-200',
+    dotClass: 'bg-violet-500',
   },
 };
 
 export function Notice({ tone = 'info', children, className }: NoticeProps) {
   const config = tones[tone];
-  return <p role={config.role} className={cn('rounded-xl border px-3 py-2 text-xs leading-5', config.className, className)}>{children}</p>;
+  return <p role={config.role} className={cn('flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5 text-xs font-medium leading-5 shadow-2xs', config.className, className)}>
+    <span aria-hidden="true" className={cn('mt-1.5 size-2 shrink-0 rounded-full', config.dotClass)} />
+    <span className="min-w-0 flex-1">{children}</span>
+  </p>;
 }

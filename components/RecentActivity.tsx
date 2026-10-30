@@ -28,11 +28,15 @@ const activityTone: Record<ActivityRecord['kind'], BadgeTone> = {
 };
 
 export function RecentActivity({ activities }: { activities: ActivityRecord[] }) {
-  if (activities.length === 0) return <p className="py-4 text-sm text-slate-500 dark:text-slate-400">还没有操作记录。</p>;
-  return <div className="divide-y divide-slate-100 dark:divide-slate-800">
-    {activities.slice(0, 8).map((activity) => <div key={activity.id} className="flex items-start gap-3 py-3 first:pt-0 last:pb-0">
-      <Badge tone={activityTone[activity.kind]} className="w-[4.5rem] shrink-0 justify-center px-0">{activityLabels[activity.kind]}</Badge>
-      <div className="min-w-0">
+  if (activities.length === 0) {
+    return <p className="rounded-xl border border-dashed border-slate-200/80 bg-slate-50/50 py-5 text-center text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-950/30 dark:text-slate-400">
+      还没有操作记录。
+    </p>;
+  }
+  return <div className="divide-y divide-slate-100/90 dark:divide-slate-800/80">
+    {activities.map((activity) => <div key={activity.id} className="flex items-start gap-3 py-2.5 first:pt-0 last:pb-0">
+      <Badge tone={activityTone[activity.kind]} className="mt-0.5 w-[4.5rem] shrink-0 justify-center px-0">{activityLabels[activity.kind]}</Badge>
+      <div className="min-w-0 flex-1">
         <TruncatedText text={activity.title} className="truncate text-sm font-medium text-slate-800 dark:text-slate-200" />
         <TruncatedText text={activity.message} className="mt-0.5 truncate text-xs leading-5 text-slate-500 dark:text-slate-400" />
       </div>

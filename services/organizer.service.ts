@@ -4,7 +4,7 @@ import { ProviderError } from '../lib/ai/openai-compatible';
 import { PermissionRequiredError, type BatchOutcome, type ClassifierPort } from './classifier.service';
 import { getFoldersWithinRoot, isNodeWithinRoot, type BookmarkPort, type BookmarkNode, SMART_ARCHIVE_FOLDER_NAME } from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
-import { createId, hostnameKey, normalizedUrl } from '../lib/utils/ids';
+import { createId, correctionUrl, hostnameKey, normalizedUrl } from '../lib/utils/ids';
 import type {
   ActivityRecord,
   CorrectionEntry,
@@ -88,9 +88,8 @@ export class OrganizerService {
       && Boolean(this.deps.bookmarks.isEligibleRoot)
       && node.parentId !== rootId
       && (await this.deps.bookmarks.isEligibleRoot?.(node.parentId ?? '')) === true;
-    if (!externalEligible && !(await this.isWithinSmartRoot(node.parentId, rootId))) return;
-
     const externalRoot = !(await this.isWithinSmartRoot(node.parentId, rootId));
+    if (!externalEligible && externalRoot) return;
 
     const snapshot: BookmarkSnapshot = {
       id,
@@ -134,6 +133,30 @@ export class OrganizerService {
     if (job.status === 'queued') await this.processJob(id);
   }
 
+  async onBookmarkRemoved(node: BookmarkNode): Promise<void> {
+    const ids = new Set<string>();
+    const collect = (current: BookmarkNode) => {
+      ids.add(current.id);
+      current.children?.forEach(collect);
+    };
+    collect(node);
+    await this.deps.store.update((state) => {
+      for (const id of ids) {
+        delete state.bookmarkMetadata[id];
+        const job = state.jobs[id];
+        if (job && !['completed', 'failed', 'skipped'].includes(job.status)) {
+          job.status = 'skipped';
+          job.updatedAt = this.now();
+          job.lastError = '书签已删除。';
+        }
+      }
+      for (const review of Object.values(state.reviews)) {
+        if (ids.has(review.bookmarkId) && ['pending', 'approving'].includes(review.status)) review.status = 'stale';
+      }
+      if (state.historicalScan) refreshHistoricalScan(state, state.historicalScan.id, this.now());
+    });
+  }
+
   async onImportBegan(): Promise<void> {
     await this.deps.store.update((state) => { state.importStartedAt = this.now(); });
   }
@@ -146,6 +169,7 @@ export class OrganizerService {
   async undoHistoricalLast(): Promise<number> {
     return this.withMutationLock(async () => {
       const state = await this.deps.store.load();
+      if (state.historicalApproval) throw new Error('历史批量审批正在进行，请等待完成后再撤销。');
       const record = state.lastHistoricalUndo;
       if (!record || record.moved.length === 0) throw new Error('没有可以撤销的历史批量归档。');
       const rootId = await this.getSmartRootId();
@@ -298,6 +322,7 @@ export class OrganizerService {
         historicalScan: historicalScanSummary(state.historicalScan, Boolean(state.lastHistoricalUndo?.moved.length)),
       } : {}),
       historicalUndoAvailable: Boolean(state.lastHistoricalUndo?.moved.length),
+      historicalApprovalPending: Boolean(state.historicalApproval),
     };
   }
 
@@ -305,24 +330,33 @@ export class OrganizerService {
 
   async approveReview(id: string, overrideFolderId?: string): Promise<void> {
     await this.withMutationLock(async () => {
-      await this.reconcilePendingOperation();
-      const item = await this.loadReviewForApproval(id);
-      if (!item) return;
-      const target = await this.resolveReviewTarget(item, overrideFolderId);
-      if (!target) return;
-      if (!(await this.revalidateReviewBeforeMove(item, target.folderId))) return;
-      const operation = await this.prepareReviewMove(item, id, target.folderId);
       try {
-        if (await this.moveWithRecovery(operation, item, item)) return;
-      } catch (error) {
-        const latest = await this.deps.bookmarks.getBookmark(item.bookmarkId);
-        if (!latest || latest.parentId !== item.sourceParentId
-          || (latest.title || '(无标题)') !== item.title || latest.url !== item.url) {
-          await this.markReviewStale(item, '书签内容或位置已变化，未执行建议。');
+        await this.reconcilePendingOperation();
+        const item = await this.loadReviewForApproval(id);
+        if (!item) return;
+        const target = await this.resolveReviewTarget(item, overrideFolderId);
+        if (!target) return;
+        if (!(await this.revalidateReviewBeforeMove(item, target.folderId))) return;
+        const operation = await this.prepareReviewMove(item, id, target.folderId);
+        try {
+          if (await this.moveWithRecovery(operation, item, item)) return;
+        } catch (error) {
+          const latest = await this.deps.bookmarks.getBookmark(item.bookmarkId);
+          if (!latest || latest.parentId !== item.sourceParentId
+            || (latest.title || '(无标题)') !== item.title || latest.url !== item.url) {
+            await this.markReviewStale(item, '书签内容或位置已变化，未执行建议。');
+          }
+          throw error;
         }
+        await this.recordApprovedReview(item, operation, target.name, overrideFolderId);
+      } catch (error) {
+        await this.reconcilePendingOperation();
+        await this.deps.store.update((state) => {
+          const review = state.reviews[id];
+          if (review?.status === 'approving' && state.pendingOperation?.reviewId !== id) review.status = 'pending';
+        });
         throw error;
       }
-      await this.recordApprovedReview(item, operation, target.name, overrideFolderId);
     });
   }
 
@@ -1491,11 +1525,13 @@ function recordCorrection(
   profile?: PageProfile,
 ): void {
   const domain = hostnameKey(url);
-  const existing = state.corrections[domain];
+  const key = correctionUrl(url);
+  const existing = state.corrections[key];
   const topics = profile?.topics?.slice(0, 8) ?? existing?.topics;
   const contentType = profile?.contentType ?? existing?.contentType;
-  state.corrections[domain] = {
+  state.corrections[key] = {
     domain,
+    url: key,
     ...entry,
     ...(topics && topics.length > 0 ? { topics } : {}),
     ...(contentType ? { contentType } : {}),

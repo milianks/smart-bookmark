@@ -44,7 +44,23 @@ export default defineBackground(() => {
     },
     pageProfiles,
   });
-  const scan = new ScanService({ bookmarks, store, processPending: () => organizer.processPending(), approveReview: (id) => organizer.approveReview(id) });
+  let approvalTimer: ReturnType<typeof setTimeout> | undefined;
+  const scan = new ScanService({
+    bookmarks, store,
+    processPending: () => organizer.processPending(),
+    approveReview: (id) => organizer.approveReview(id),
+    scheduleApprovalResume: async (delayMs) => {
+      await chrome.alarms.create('ai-bookmark-manager.approve', { when: Date.now() + Math.max(delayMs, 30_000) });
+      // Continue promptly while alive; the durable alarm recovers work if the worker is stopped.
+      if (delayMs < 30_000) {
+        if (approvalTimer) clearTimeout(approvalTimer);
+        approvalTimer = setTimeout(() => {
+          approvalTimer = undefined;
+          void scan.resumeApprovals().catch((error: unknown) => reportBackgroundError(error));
+        }, delayMs);
+      }
+    },
+  });
   const settings = new SettingsService({
     store, classifier,
     hasProviderPermission: async (baseUrl) => {
@@ -65,7 +81,6 @@ export default defineBackground(() => {
         const result = await bookmarks.initializeSmartBookmarkRoot({
           storedRootId: state.smartBookmarkRootId,
           initializeDefaults: !state.smartBookmarkInitialized,
-          identity: chrome.identity,
         });
         await store.update((next) => {
           next.smartBookmarkRootId = result.rootId;
@@ -81,12 +96,18 @@ export default defineBackground(() => {
   const resumeAfterRootInitialization = (): void => {
     void initializeSmartBookmarkRoot()
       .catch((error: unknown) => reportBackgroundError(error))
-      .then(() => organizer.resume().catch((error: unknown) => reportBackgroundError(error)));
+      .then(async () => {
+        await organizer.resume().catch((error: unknown) => reportBackgroundError(error));
+        await scan.resumeApprovals().catch((error: unknown) => reportBackgroundError(error));
+      });
   };
 
   // MV3 event listeners must be registered synchronously at worker evaluation time.
   chrome.bookmarks.onCreated.addListener((id, node) => {
     void organizer.onBookmarkCreated(id, node).catch((error: unknown) => reportBackgroundError(error));
+  });
+  chrome.bookmarks.onRemoved.addListener((_id, info) => {
+    void organizer.onBookmarkRemoved(info.node).catch((error: unknown) => reportBackgroundError(error));
   });
   chrome.bookmarks.onImportBegan.addListener(() => {
     void organizer.onImportBegan().catch((error: unknown) => reportBackgroundError(error));
@@ -101,6 +122,9 @@ export default defineBackground(() => {
     resumeAfterRootInitialization();
   });
   chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'ai-bookmark-manager.approve') {
+      void scan.resumeApprovals().catch((error: unknown) => reportBackgroundError(error));
+    }
     if (alarm.name === 'ai-bookmark-manager.resume') {
       void organizer.resume().catch((error: unknown) => reportBackgroundError(error));
     }

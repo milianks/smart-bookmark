@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_SETTINGS, emptyPersistedState, type FolderSummary } from '../types/domain';
-import { stableFingerprint } from '../lib/utils/ids';
+import { correctionUrl, stableFingerprint } from '../lib/utils/ids';
 import { MemoryStateRepository } from '../lib/storage/repository';
 import { ClassificationService, PermissionRequiredError } from '../services/classifier.service';
 import { SettingsService } from '../services/settings.service';
@@ -32,16 +32,16 @@ describe('ClassificationService', () => {
     expect(provider.classify).not.toHaveBeenCalled();
   });
 
-  it('域名命中用户改选纠错时直接路由，不调用远端模型', async () => {
+  it('同一页面命中用户改选纠错时直接路由，不调用远端模型', async () => {
     const provider = createProvider();
     const store = new MemoryStateRepository();
     await store.update((state) => {
-      state.corrections['github.com'] = { domain: 'github.com', action: 'move', folderId: 'development', createdAt: 1 };
+      state.corrections['https://github.com/a/b#readme'] = { domain: 'github.com', url: 'https://github.com/a/b#readme', action: 'move', folderId: 'development', createdAt: 1 };
     });
     const service = new ClassificationService(provider, store);
 
     const result = await service.classify({
-      title: 'Some repository', url: 'https://github.com/a/b', domain: 'github.com',
+      title: 'Some repository', url: 'https://github.com/a/b?utm_source=test#readme', domain: 'github.com',
       currentFolder: 'Bookmarks bar', currentFolderId: 'bar',
     }, folders, { ...DEFAULT_SETTINGS, apiKey: 'test-key' }, false);
 
@@ -49,11 +49,11 @@ describe('ClassificationService', () => {
     expect(provider.classify).not.toHaveBeenCalled();
   });
 
-  it('域名命中保留纠错时返回 keep 且不请求模型', async () => {
+  it('同一页面命中保留纠错时返回 keep 且不请求模型', async () => {
     const provider = createProvider();
     const store = new MemoryStateRepository();
     await store.update((state) => {
-      state.corrections['github.com'] = { domain: 'github.com', action: 'keep', createdAt: 1 };
+      state.corrections['https://github.com/example/repo'] = { domain: 'github.com', url: 'https://github.com/example/repo', action: 'keep', createdAt: 1 };
     });
     const service = new ClassificationService(provider, store);
 
@@ -64,6 +64,42 @@ describe('ClassificationService', () => {
 
     expect(result).toMatchObject({ source: 'rule', result: { action: 'keep' } });
     expect(provider.classify).not.toHaveBeenCalled();
+  });
+
+  it.each(['move', 'keep'] as const)('纠错 %s 不传播到同站其他页面，旧域名规则也不硬路由', async (action) => {
+    const provider = createProvider();
+    const store = new MemoryStateRepository();
+    await store.update((state) => {
+      state.corrections['github.com'] = { domain: 'github.com', action, folderId: 'development', createdAt: 1 };
+      state.corrections['https://github.com/a/b'] = { domain: 'github.com', url: 'https://github.com/a/b', action, folderId: 'development', createdAt: 2 };
+    });
+    const service = new ClassificationService(provider, store);
+    const result = await service.classify({
+      title: 'Travel journal', url: 'https://github.com/other/travel', domain: 'github.com',
+      currentFolder: 'Bookmarks bar', currentFolderId: 'bar',
+    }, folders, { ...DEFAULT_SETTINGS, apiKey: 'test-key' }, true);
+    expect(result.source).toBe('ai');
+    expect(provider.classify).toHaveBeenCalledOnce();
+    const decisions = vi.mocked(provider.classify).mock.calls[0]![3];
+    expect(decisions?.[0]).toMatchObject({ url: 'https://github.com/a/b' });
+    expect(buildClassificationMessages({ title: 'Travel', url: 'https://github.com/other/travel', domain: 'github.com', currentFolder: 'bar' }, folders, decisions)[0]!.content).toContain('不能推广到整个域名');
+  });
+
+  it.each(['move', 'keep'] as const)('纠错 %s 保留 SPA hash 路由边界，同时复用同一页面决定', async (action) => {
+    const provider = createProvider();
+    const store = new MemoryStateRepository();
+    const url = 'https://portal.example/#/front';
+    await store.update((state) => {
+      state.corrections[url] = { domain: 'portal.example', url, action, folderId: 'development', createdAt: 1 };
+    });
+    const service = new ClassificationService(provider, store);
+    const input = { title: 'Portal page', url, domain: 'portal.example', currentFolder: 'Bookmarks bar', currentFolderId: 'bar' };
+    const settings = { ...DEFAULT_SETTINGS, apiKey: 'test-key' };
+    expect(await service.classify({ ...input, url: 'https://portal.example/?utm_source=test#/front' }, folders, settings, false))
+      .toMatchObject({ source: 'rule', result: { action } });
+    expect(provider.classify).not.toHaveBeenCalled();
+    expect((await service.classify({ ...input, url: 'https://portal.example/#/finance' }, folders, settings, true)).source).toBe('ai');
+    expect(provider.classify).toHaveBeenCalledOnce();
   });
 
   it('主题/内容类型聚合偏好命中时直接路由到纠错目录', async () => {
@@ -254,6 +290,16 @@ describe('ClassificationService', () => {
     expect(result).toBeNull();
   });
 
+  it.each([
+    { title: '学习烘焙', url: 'https://example.com/学习', samples: [] },
+    { title: '学习烘焙', url: 'https://example.com/baking', samples: [{ title: '机器学习', url: 'https://example.com/ml', hostname: 'example.com' }] },
+  ])('单个中文二元词即使被路径或同域样例重复命中也不自动移动', ({ title, url, samples }) => {
+    expect(classifyWithRules({ title, url, domain: 'example.com', currentFolder: '待分类', currentFolderId: 'inbox' }, [
+      { id: 'ml', name: '机器学习', path: '智能书签 / 机器学习', samples },
+      { id: 'inbox', name: '待分类', path: '智能书签 / 待分类' },
+    ])).toBeNull();
+  });
+
   it('中文标题与目录名共享词汇时本地规则可命中', () => {
     const result = classifyWithRules({
       title: '机器学习入门',
@@ -398,7 +444,7 @@ describe('classification cache safety', () => {
     expect((await service.classify(profiled, folders, settings, true)).source).toBe('ai');
     await store.update((state) => { state.preferences.x = { key: 'x', topics: ['topic-x'], contentType: 'article', folderId: 'research', weight: 2, count: 2, createdAt: 1, updatedAt: 1 }; });
     expect(await service.classify(profiled, folders, settings, false)).toMatchObject({ source: 'rule', result: { targetFolderId: 'research' } });
-    await store.update((state) => { state.corrections['example.com'] = { domain: 'example.com', action: 'keep', createdAt: 2 }; });
+    await store.update((state) => { state.corrections[correctionUrl(input.url)] = { domain: 'example.com', url: correctionUrl(input.url), action: 'keep', createdAt: 2 }; });
     expect(await service.classify(profiled, folders, settings, false)).toMatchObject({ source: 'rule', result: { action: 'keep' } });
     expect(provider.classify).toHaveBeenCalledOnce();
 
@@ -887,7 +933,7 @@ describe('classification cache safety', () => {
     const provider = createProvider();
     const service = new ClassificationService(provider, store);
     const snapshot = await store.load();
-    await store.update((state) => { state.corrections['example.com'] = { domain: 'example.com', action: 'keep', createdAt: 1 }; });
+    await store.update((state) => { state.corrections[correctionUrl(input.url)] = { domain: 'example.com', url: correctionUrl(input.url), action: 'keep', createdAt: 1 }; });
     expect((await service.classify(input, folders, settings, true, snapshot)).source).toBe('ai');
     expect((await service.classify(input, folders, settings, false)).source).toBe('rule');
     const savedCrypto = globalThis.crypto;

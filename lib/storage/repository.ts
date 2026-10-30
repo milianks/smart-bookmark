@@ -11,7 +11,7 @@ import {
   type PersistedState,
   type UndoRecord,
 } from '../../types/domain';
-import { hostnameKey } from '../utils/ids';
+import { correctionUrl, hostnameKey } from '../utils/ids';
 
 const STORAGE_KEY = 'ai-bookmark-manager.state.v1';
 // Legacy repository writes rebuild settings from a whitelist, dropping this marker.
@@ -29,6 +29,7 @@ export interface LocalStorageArea {
 
 export class ChromeStateRepository implements StateRepository {
   private writeChain: Promise<void> = Promise.resolve();
+  private reading?: Promise<PersistedState>;
 
   constructor(private readonly storage: LocalStorageArea = chrome.storage.local) {}
 
@@ -40,8 +41,10 @@ export class ChromeStateRepository implements StateRepository {
   update(mutator: (state: PersistedState) => void): Promise<PersistedState> {
     const operation = this.writeChain.then(async () => {
       const state = await this.readNow();
+      const before = JSON.stringify(state);
       mutator(state);
       const validated = normalizeState(state);
+      if (JSON.stringify(validated) === before) return structuredClone(validated);
       await this.storage.set({ [STORAGE_KEY]: {
         ...validated,
         settings: { ...validated.settings, [CACHE_SETTINGS_EPOCH]: validated.credentialGeneration },
@@ -53,6 +56,12 @@ export class ChromeStateRepository implements StateRepository {
   }
 
   private async readNow(): Promise<PersistedState> {
+    // Share only in-flight reads; later calls must observe external writes and legacy cache epochs.
+    this.reading ??= this.readStored().finally(() => { this.reading = undefined; });
+    return structuredClone(await this.reading);
+  }
+
+  private async readStored(): Promise<PersistedState> {
     const record = await this.storage.get(STORAGE_KEY);
     const stored = record[STORAGE_KEY];
     if (!stored || typeof stored !== 'object') return emptyPersistedState();
@@ -70,33 +79,68 @@ export class ChromeStateRepository implements StateRepository {
 function normalizeState(input: Partial<PersistedState>): PersistedState {
   const defaults = emptyPersistedState();
   const settings = normalizeSettings(input.settings);
+  const { pageProfiles: _pageProfiles, settingsDraft: rawDraft, ...retained } = input as Partial<PersistedState> & { pageProfiles?: unknown };
+  const draftInput = rawDraft && typeof rawDraft === 'object' && !Array.isArray(rawDraft)
+    ? Object.fromEntries(Object.entries(rawDraft).filter(([key]) => key !== 'forceOrganize'))
+    : rawDraft;
+  const draft = SettingsDraftSchema.safeParse(draftInput);
+  const historicalScan = normalizeHistoricalScan(input.historicalScan);
+  const historicalApproval = normalizeHistoricalApproval(input.historicalApproval);
   const validCredentialGeneration = Number.isSafeInteger(input.credentialGeneration) && (input.credentialGeneration ?? -1) >= 0;
   const smartBookmarkRootId = typeof input.smartBookmarkRootId === 'string' && input.smartBookmarkRootId.trim().length > 0
     ? input.smartBookmarkRootId.trim()
     : undefined;
   return {
     ...defaults,
-    ...input,
+    ...retained,
     version: 1,
     smartBookmarkRootId,
     smartBookmarkInitialized: input.smartBookmarkInitialized === true && Boolean(smartBookmarkRootId),
     settings,
     credentialGeneration: validCredentialGeneration ? input.credentialGeneration! : 0,
     jobs: input.jobs && typeof input.jobs === 'object' ? input.jobs : {},
-    reviews: input.reviews && typeof input.reviews === 'object' ? input.reviews : {},
+    reviews: normalizeReviews(input.reviews, historicalScan, input.pendingOperation?.reviewId, historicalApproval?.reviewIds),
     cache: validCredentialGeneration ? normalizeCache(input.cache) : {},
     activities: Array.isArray(input.activities) ? input.activities.slice(-100) : [],
-    historicalScan: normalizeHistoricalScan(input.historicalScan),
+    historicalScan,
+    historicalApproval,
     lastHistoricalUndo: normalizeHistoricalUndo(input.lastHistoricalUndo),
     undoStack: normalizeUndoStack(input.undoStack, input.lastUndo),
     corrections: normalizeCorrections(input.corrections),
     bookmarkMetadata: normalizeBookmarkMetadata(input.bookmarkMetadata),
     preferences: normalizePreferences(input.preferences),
-    pageProfiles: normalizePageProfiles(input.pageProfiles),
-    ...(SettingsDraftSchema.safeParse(input.settingsDraft).success
-      ? { settingsDraft: SettingsDraftSchema.parse(input.settingsDraft) }
-      : {}),
+    ...(draft.success ? { settingsDraft: draft.data } : {}),
   };
+}
+
+function normalizeHistoricalApproval(input: unknown): PersistedState['historicalApproval'] {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const value = input as Record<string, unknown>;
+  if (typeof value.scanId !== 'string' || !value.scanId.trim() || !Array.isArray(value.reviewIds)) return undefined;
+  const reviewIds = [...new Set(value.reviewIds.filter((id): id is string => typeof id === 'string' && id.length > 0))];
+  return reviewIds.length ? { scanId: value.scanId, reviewIds } : undefined;
+}
+
+function normalizeReviews(
+  input: unknown,
+  scan: HistoricalScanState | undefined,
+  pendingReviewId: string | undefined,
+  approvalIds: string[] = [],
+): PersistedState['reviews'] {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const protectedIds = new Set(approvalIds);
+  if (pendingReviewId) protectedIds.add(pendingReviewId);
+  const activeScanId = scan && ['scanning', 'awaiting_review'].includes(scan.status) ? scan.id : undefined;
+  const retained: Array<[string, PersistedState['reviews'][string]]> = [];
+  const terminal: typeof retained = [];
+  for (const [id, item] of Object.entries(input as PersistedState['reviews'])) {
+    if (!item || typeof item !== 'object') continue;
+    if (item.status === 'pending' || item.status === 'approving' || protectedIds.has(id)
+      || (activeScanId && item.scanId === activeScanId)) retained.push([id, item]);
+    else terminal.push([id, item]);
+  }
+  terminal.sort((a, b) => b[1].createdAt - a[1].createdAt);
+  return Object.fromEntries([...retained, ...terminal.slice(0, 250)]);
 }
 
 export function normalizeCache(input: unknown): PersistedState['cache'] {
@@ -132,7 +176,7 @@ function normalizeBookmarkMetadata(input: unknown): PersistedState['bookmarkMeta
     if (typeof candidate.generatedAt !== 'number' || !Number.isFinite(candidate.generatedAt) || candidate.generatedAt < 0) continue;
     result[id] = { summary: candidate.summary.trim(), tags, generatedAt: candidate.generatedAt };
   }
-  return result;
+  return Object.fromEntries(Object.entries(result).sort((a, b) => b[1].generatedAt - a[1].generatedAt).slice(0, 2000));
 }
 
 function normalizeHistoricalScan(input: unknown): HistoricalScanState | undefined {
@@ -154,7 +198,6 @@ function normalizeHistoricalScan(input: unknown): HistoricalScanState | undefine
     failedCount: number('failedCount'),
     skippedCount: number('skippedCount'),
     coveredIds: [...new Set(coveredIds)],
-    forceOrganize: value.forceOrganize === true,
     ...(typeof value.lastError === 'string' ? { lastError: value.lastError.slice(0, 500) } : {}),
   };
 }
@@ -169,15 +212,23 @@ function normalizeUndoStack(stack: unknown, lastUndo: unknown): UndoRecord[] {
 function normalizeCorrections(input: unknown): PersistedState['corrections'] {
   if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
   const result: PersistedState['corrections'] = {};
-  for (const [rawDomain, value] of Object.entries(input as Record<string, unknown>)) {
-    if (!rawDomain || typeof value !== 'object' || value === null) continue;
+  for (const [rawKey, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!rawKey || typeof value !== 'object' || value === null) continue;
     const entry = value as Record<string, unknown>;
     if (entry.action !== 'move' && entry.action !== 'keep') continue;
     if (typeof entry.createdAt !== 'number' || !Number.isFinite(entry.createdAt) || entry.createdAt < 0) continue;
-    if (entry.action === 'move' && typeof entry.folderId !== 'string') continue;
-    const domain = hostnameKey(rawDomain);
-    result[domain] = {
-      domain,
+    if (entry.action === 'move' && (typeof entry.folderId !== 'string' || !entry.folderId.trim())) continue;
+    // Domain-only legacy rules cannot safely infer which page the user corrected.
+    if (typeof entry.url !== 'string') continue;
+    let url: string;
+    try {
+      if (!['http:', 'https:'].includes(new URL(entry.url).protocol)) continue;
+      url = correctionUrl(entry.url);
+      if (correctionUrl(rawKey) !== url) continue;
+    } catch { continue; }
+    result[url] = {
+      domain: hostnameKey(url),
+      url,
       action: entry.action,
       ...(entry.action === 'move' ? { folderId: entry.folderId as string } : {}),
       createdAt: entry.createdAt,
@@ -189,7 +240,7 @@ function normalizeCorrections(input: unknown): PersistedState['corrections'] {
       ...(typeof entry.lastAt === 'number' && Number.isFinite(entry.lastAt) && entry.lastAt >= 0 ? { lastAt: entry.lastAt } : {}),
     };
   }
-  return result;
+  return Object.fromEntries(Object.entries(result).sort((a, b) => (b[1].lastAt ?? b[1].createdAt) - (a[1].lastAt ?? a[1].createdAt)).slice(0, 200));
 }
 
 function normalizePreferences(input: unknown): PersistedState['preferences'] {
@@ -211,32 +262,6 @@ function normalizePreferences(input: unknown): PersistedState['preferences'] {
   }
   entries.sort((a, b) => b[1].updatedAt - a[1].updatedAt);
   for (const [key, entry] of entries.slice(0, 200)) result[key] = entry;
-  return result;
-}
-
-function normalizePageProfiles(input: unknown): PersistedState['pageProfiles'] {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
-  const result: PersistedState['pageProfiles'] = {};
-  const entries: Array<[string, PersistedState['pageProfiles'][string]]> = [];
-  for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
-    if (!key || typeof value !== 'object' || value === null) continue;
-    const entry = value as Record<string, unknown>;
-    if (typeof entry.summary !== 'string' || entry.summary.trim().length === 0 || entry.summary.length > 500) continue;
-    if (!Array.isArray(entry.topics)) continue;
-    const topics = entry.topics.filter((topic): topic is string => typeof topic === 'string' && topic.trim().length > 0 && topic.length <= 32).slice(0, 8);
-    if (typeof entry.contentType !== 'string') continue;
-    if (typeof entry.generatedAt !== 'number' || !Number.isFinite(entry.generatedAt)) continue;
-    const charCount = typeof entry.charCount === 'number' && Number.isFinite(entry.charCount) ? Math.max(0, Math.floor(entry.charCount)) : 0;
-    entries.push([key, {
-      summary: entry.summary.trim(),
-      topics,
-      contentType: entry.contentType.slice(0, 32),
-      charCount,
-      generatedAt: entry.generatedAt,
-    }]);
-  }
-  entries.sort((a, b) => b[1].generatedAt - a[1].generatedAt);
-  for (const [key, entry] of entries.slice(0, 100)) result[key] = entry;
   return result;
 }
 

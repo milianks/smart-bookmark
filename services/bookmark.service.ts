@@ -19,10 +19,6 @@ export interface BookmarkApi {
   create(details: { parentId: string; title: string }): Promise<BookmarkNode>;
 }
 
-export interface ProfileUserInfoApi {
-  getProfileUserInfo(): Promise<{ email?: string }>;
-}
-
 export interface SmartBookmarkRootInitialization {
   rootId: string;
   title: string;
@@ -72,27 +68,6 @@ export interface HistoricalBookmarkCandidate {
   url: string;
   parentId: string;
   dateAdded?: number;
-}
-
-/** Enumerate editable HTTP(S) bookmarks without crossing the protection boundary. */
-export function enumerateHistoricalBookmarks(tree: BookmarkNode[], forceOrganize: boolean): HistoricalBookmarkCandidate[] {
-  const result: HistoricalBookmarkCandidate[] = [];
-  const seen = new Set<string>();
-  const visit = (node: BookmarkNode, rootType?: string, rootManaged = false, directBuiltinChild = false) => {
-    const nextRootType = node.folderType ?? rootType;
-    const managed = rootManaged || node.unmodifiable === 'managed' || node.folderType === 'managed';
-    if (node.url && node.parentId && isHttpUrl(node.url) && !managed) {
-      const eligible = nextRootType !== undefined && (!forceOrganize ? directBuiltinChild : true);
-      if (eligible && !seen.has(node.id)) {
-        seen.add(node.id);
-        result.push({ id: node.id, title: node.title || '(无标题)', url: node.url, parentId: node.parentId, ...(node.dateAdded ? { dateAdded: node.dateAdded } : {}) });
-      }
-    }
-    const isBuiltinRoot = !node.url && ['bookmarks-bar', 'other', 'mobile'].includes(node.folderType ?? '') && !managed;
-    for (const child of node.children ?? []) visit(child, nextRootType, managed, isBuiltinRoot);
-  };
-  for (const root of tree) visit(root);
-  return result;
 }
 
 function isHttpUrl(value: string): boolean {
@@ -221,11 +196,6 @@ export function enumerateHistoricalBookmarksWithinRoot(
   return result;
 }
 
-export function smartBookmarkOwnerName(email: string | undefined): string {
-  const localPart = typeof email === 'string' ? email.trim().split('@', 1)[0]?.trim() : '';
-  return localPart || 'bookmark';
-}
-
 function findBookmarksBar(tree: BookmarkNode[]): BookmarkNode | null {
   const visit = (nodes: BookmarkNode[]): BookmarkNode | null => {
     for (const node of nodes) {
@@ -248,16 +218,8 @@ export class ChromeBookmarkService implements BookmarkPort {
   async initializeSmartBookmarkRoot(options: {
     storedRootId?: string;
     initializeDefaults?: boolean;
-    identity?: ProfileUserInfoApi;
   } = {}): Promise<SmartBookmarkRootInitialization> {
-    const identity = options.identity ?? chrome.identity;
-    let email: string | undefined;
-    try {
-      email = (await identity.getProfileUserInfo()).email;
-    } catch {
-      email = undefined;
-    }
-    const title = `${smartBookmarkOwnerName(email)} 的智能书签`;
+    const title = '智能书签';
     const tree = await this.api.getTree();
     const bar = findBookmarksBar(tree);
     if (!bar || bar.unmodifiable === 'managed') throw new Error('Chrome 书签栏不可用');
@@ -334,7 +296,10 @@ export class ChromeBookmarkService implements BookmarkPort {
   }
 
   async isWithinRoot(nodeId: string, rootId: string): Promise<boolean> {
-    return isNodeWithinRoot(await this.api.getTree(), nodeId, rootId);
+    const ancestors = await this.getAncestors(nodeId);
+    return Boolean(ancestors
+      && ancestors.some((node) => node.id === rootId && isFolder(node))
+      && ancestors.every((node) => node.unmodifiable !== 'managed' && node.folderType !== 'managed'));
   }
 
   async getFoldersWithinRoot(rootId: string): Promise<FolderSummary[]> {
@@ -342,12 +307,16 @@ export class ChromeBookmarkService implements BookmarkPort {
   }
 
   async isValidTargetFolder(targetFolderId: string, rootId: string): Promise<boolean> {
-    return isValidTargetFolder(await this.api.getTree(), targetFolderId, rootId);
+    const ancestors = await this.getAncestors(targetFolderId);
+    return Boolean(ancestors && isFolder(ancestors[0]!)
+      && ancestors.some((node) => node.id === rootId && isFolder(node))
+      && ancestors.every((node) => node.unmodifiable !== 'managed' && node.folderType !== 'managed'));
   }
 
   async getFolderPath(id: string): Promise<string | null> {
-    const folders = await this.getFolders();
-    return folders.find((folder) => folder.id === id)?.path ?? null;
+    const ancestors = await this.getAncestors(id);
+    if (!ancestors || !isFolder(ancestors[0]!) || !ancestors[0]!.title.trim()) return null;
+    return ancestors.reverse().map((node) => node.title).filter(Boolean).join(' / ');
   }
 
   async folderExists(id: string): Promise<boolean> {
@@ -370,6 +339,21 @@ export class ChromeBookmarkService implements BookmarkPort {
     const parent = await this.getFolder(parentId);
     if (!parent || parent.unmodifiable === 'managed') throw new Error('新文件夹的上级目录不存在或不可修改');
     return this.api.create({ parentId, title: name });
+  }
+
+  private async getAncestors(id: string): Promise<BookmarkNode[] | null> {
+    const ancestors: BookmarkNode[] = [];
+    const visited = new Set<string>();
+    let currentId: string | undefined = id;
+    while (currentId) {
+      if (visited.has(currentId)) return null;
+      visited.add(currentId);
+      const node = await this.getNode(currentId);
+      if (!node || (ancestors.length > 0 && !isFolder(node))) return null;
+      ancestors.push(node);
+      currentId = node.parentId;
+    }
+    return ancestors.length > 0 ? ancestors : null;
   }
 
   private async getNode(id: string): Promise<BookmarkNode | null> {

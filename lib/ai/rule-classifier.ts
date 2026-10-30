@@ -32,6 +32,7 @@ interface FolderEvidence {
   sampleOverlap: number;
   exactSampleDomain: boolean;
   exactSampleUrl: boolean;
+  hasStrongTopic: boolean;
 }
 
 /** Rank folders for the provider without losing the full list on weak signals. */
@@ -103,6 +104,8 @@ export function classifyWithRules(
   const top = ranked[0];
   if (!top || top.folder.id === input.currentFolderId || !hasMeaningfulEvidence(top, ranked[1])) return null;
 
+  if (!top.exactSampleUrl && !top.hasStrongTopic) return null;
+
   const confidence = confidenceFor(top);
   if (confidence < 0.86) return null;
   if (ranked[1] && confidenceFor(ranked[1]) >= confidence - 0.04) return null;
@@ -127,6 +130,7 @@ function scoreFolders(input: ClassificationInput, folders: FolderSummary[]): Fol
     .filter(([host]) => domain === host || domain.endsWith(`.${host}`))
     .flatMap(([, values]) => values.flatMap(tokens));
   const hintTokens = new Set(hints);
+  const topicalTokens = new Set([...tokens(input.title), ...pathTokens]);
   const subjectTokens = new Set([...tokens(input.title), ...tokens(domain), ...pathTokens, ...hints]);
 
   return folders
@@ -135,6 +139,7 @@ function scoreFolders(input: ClassificationInput, folders: FolderSummary[]): Fol
       const folderNameTokens = new Set(tokens(folder.name));
       const folderPathTokens = new Set(tokens(folder.path));
       const folderTokens = new Set([...folderNameTokens, ...folderPathTokens]);
+      const topicalMatches = new Set([...topicalTokens].filter((token) => folderTokens.has(token) && !GENERIC_FOLDER_TOKENS.has(token)));
       const folderOverlap = informativeOverlap(subjectTokens, folderTokens);
       const hintOverlap = informativeOverlap(hintTokens, folderNameTokens);
       const pathOverlap = informativeOverlap(new Set(pathTokens), folderPathTokens);
@@ -150,6 +155,9 @@ function scoreFolders(input: ClassificationInput, folders: FolderSummary[]): Fol
         const sampleDomain = normalizeHost(sample.hostname || safeHostname(sample.url));
         const samplePath = urlPathTokens(sample.url);
         const sampleTokens = new Set([...tokens(sample.title), ...samplePath]);
+        for (const token of topicalTokens) {
+          if (sampleTokens.has(token) && !GENERIC_FOLDER_TOKENS.has(token)) topicalMatches.add(token);
+        }
         const sampleMatches = informativeOverlap(subjectTokens, sampleTokens);
         sampleOverlap += sampleMatches;
         if (sampleDomain && domain && (domain === sampleDomain || domain.endsWith(`.${sampleDomain}`) || sampleDomain.endsWith(`.${domain}`))) {
@@ -173,6 +181,8 @@ function scoreFolders(input: ClassificationInput, folders: FolderSummary[]): Fol
         sampleOverlap,
         exactSampleDomain,
         exactSampleUrl,
+        // A lone Han bigram is too ambiguous, even when repeated by path/domain signals.
+        hasStrongTopic: topicalMatches.size >= 2 || [...topicalMatches].some((token) => !/\p{sc=Han}/u.test(token)),
       };
     })
     .sort((a, b) => b.score - a.score || b.sampleOverlap - a.sampleOverlap || a.folder.path.localeCompare(b.folder.path));

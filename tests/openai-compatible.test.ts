@@ -50,11 +50,12 @@ describe('OpenAICompatibleProvider', () => {
 
   it('最近用户纠错作为历史决定进入分类提示', () => {
     const messages = buildClassificationMessages(input, [], [
-      { domain: 'react.dev', action: 'move', folderPath: '智能书签 / 开发' },
+      { domain: 'react.dev', url: 'https://react.dev/learn', action: 'move', folderPath: '智能书签 / 开发' },
       { domain: 'medium.com', action: 'keep' },
     ]);
 
-    expect(messages[0]?.content).toContain('recentUserDecisions 是用户此前的手动决定');
+    expect(messages[0]?.content).toContain('不能推广到整个域名');
+    expect(messages[1]?.content).toContain('https://react.dev/learn');
     expect(messages[1]?.content).toContain('"recentUserDecisions"');
     expect(messages[1]?.content).toContain('react.dev');
   });

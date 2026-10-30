@@ -18,7 +18,6 @@ const dashboard: DashboardState = {
     model: 'test-model',
     confidenceThreshold: DEFAULT_SETTINGS.confidenceThreshold,
     mode: DEFAULT_SETTINGS.mode,
-    forceOrganize: DEFAULT_SETTINGS.forceOrganize,
     notificationsEnabled: DEFAULT_SETTINGS.notificationsEnabled,
     successNotifications: DEFAULT_SETTINGS.successNotifications,
     organizeExternalRoots: DEFAULT_SETTINGS.organizeExternalRoots,
@@ -47,6 +46,7 @@ function makeServices() {
     getSettingsDraft: 0,
     updateSettingsDraft: [] as SettingsDraft[],
     clearSettingsDraft: 0,
+    clearCorrections: 0,
     approveReview: [] as string[],
     rejectReview: [] as string[],
     undoLastMove: 0,
@@ -72,6 +72,7 @@ function makeServices() {
     getSettingsDraft: async () => { calls.getSettingsDraft += 1; return { model: 'draft-model' }; },
     updateSettingsDraft: async (draft) => { calls.updateSettingsDraft.push(draft); },
     clearSettingsDraft: async () => { calls.clearSettingsDraft += 1; },
+    clearCorrections: async () => { calls.clearCorrections += 1; },
   };
   const normalizeBaseUrl = vi.fn((baseUrl: string) => `${baseUrl}/normalized`);
   const metadata = { generate: async (bookmarkId: string) => { calls.generateMetadata.push(bookmarkId); return { summary: 'Summary', tags: ['tag'], generatedAt: 10 }; } };
@@ -97,8 +98,17 @@ describe('background runtime router', () => {
 
     for (const request of malformed) expect(RequestSchema.safeParse(request).success).toBe(false);
     expect(RequestSchema.safeParse({ type: 'state:get' }).success).toBe(true);
+    expect(RequestSchema.safeParse({ type: 'corrections:clear', extra: true }).success).toBe(false);
     expect(RequestSchema.safeParse({ type: 'settings:update', settings: { model: 'model' } }).success).toBe(true);
     expect(RequestSchema.safeParse({ type: 'scan:approve-all' }).success).toBe(true);
+  });
+
+  it('routes clearing learned rules without touching bookmark mutations', async () => {
+    const { calls, services } = makeServices();
+    expect(RequestSchema.safeParse({ type: 'corrections:clear' }).success).toBe(true);
+    await expect(handleRequest({ type: 'corrections:clear' }, services)).resolves.toEqual({ saved: true });
+    expect(calls.clearCorrections).toBe(1);
+    expect(calls.approveReview).toEqual([]);
   });
 
   it('routes every RuntimeRequest variant through typed service facades', async () => {

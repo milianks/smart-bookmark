@@ -114,7 +114,7 @@ describe('OrganizerService', () => {
       hasProviderPermission: async () => true,
       makeId: (prefix) => `${prefix}-test`,
     });
-    scan = new ScanService({ bookmarks, store, processPending: () => organizer.processPending(), approveReview: (id) => organizer.approveReview(id), makeId: (prefix) => `${prefix}-test` });
+    scan = new ScanService({ scheduleApprovalResume: async () => {}, bookmarks, store, processPending: () => organizer.processPending(), approveReview: (id) => organizer.approveReview(id), makeId: (prefix) => `${prefix}-test` });
     settings = new SettingsService({ store, classifier, hasProviderPermission: async () => true, afterUpdate: () => organizer.resume() });
   });
 
@@ -205,6 +205,20 @@ describe('OrganizerService', () => {
     expect(bookmarks.moves.at(-1)).toEqual({ id: 'b1', target: 'folder-1' });
   });
 
+  it('failed folder creation restores a queued approval to pending for manual retry', async () => {
+    result = { action: 'suggest_folder', suggestedFolder: { name: 'Agent', parentId: 'dev' }, confidence: 0.79, reason: 'new topic' };
+    const { scanId } = await scan.startHistoricalScan();
+    vi.spyOn(bookmarks, 'createFolder').mockRejectedValueOnce(new Error('folder creation failed'));
+    await scan.approveAllHistoricalReviews(scanId);
+    await scan.resumeApprovals();
+    expect((await store.load()).reviews.b1?.status).toBe('pending');
+    expect((await store.load()).historicalApproval).toBeUndefined();
+    expect(bookmarks.moves).toEqual([]);
+    await organizer.approveReview('b1');
+    expect((await store.load()).reviews.b1?.status).toBe('approved');
+    expect(bookmarks.moves).toHaveLength(1);
+  });
+
   it('拒绝建议会保留书签原始位置', async () => {
     result = { action: 'move', targetFolderId: 'dev', confidence: 0.6, reason: '需要确认' };
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
@@ -258,16 +272,32 @@ describe('OrganizerService', () => {
     expect((await bookmarks.getBookmark('b1'))?.parentId).toBe('dev');
   });
 
+  it('removes metadata for deleted folders and closes pending work without touching other bookmarks', async () => {
+    result = { action: 'move', targetFolderId: 'dev', confidence: 0.6, reason: 'review' };
+    await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
+    await store.update((state) => {
+      state.bookmarkMetadata.b1 = { summary: 'removed', tags: ['test'], generatedAt: 1 };
+      state.bookmarkMetadata.other = { summary: 'retained', tags: ['test'], generatedAt: 1 };
+    });
+    await organizer.onBookmarkRemoved({ id: 'deleted-folder', title: 'Deleted', children: [bookmarks.nodes.get('b1')!] });
+    const state = await store.load();
+    expect(state.bookmarkMetadata.b1).toBeUndefined();
+    expect(state.bookmarkMetadata.other?.summary).toBe('retained');
+    expect(state.jobs.b1?.status).toBe('skipped');
+    expect(state.reviews.b1?.status).toBe('stale');
+    expect(bookmarks.moves).toEqual([]);
+  });
+
   it('拒绝记录 keep 纠错，改选批准记录 move 纠错', async () => {
     result = { action: 'move', targetFolderId: 'dev', confidence: 0.6, reason: '需要确认' };
     await organizer.onBookmarkCreated('b1', bookmarks.nodes.get('b1')!);
     await organizer.rejectReview('b1');
-    expect((await store.load()).corrections['example.com']).toMatchObject({ action: 'keep' });
+    expect((await store.load()).corrections['https://example.com/langgraph']).toMatchObject({ action: 'keep' });
 
     bookmarks.addBookmark('b2', 'Second guide', 'https://example.org/x', 'smart-root');
     await organizer.onBookmarkCreated('b2', bookmarks.nodes.get('b2')!);
     await organizer.approveReview('b2', 'nested');
-    expect((await store.load()).corrections['example.org']).toMatchObject({ action: 'move', folderId: 'nested' });
+    expect((await store.load()).corrections['https://example.org/x']).toMatchObject({ action: 'move', folderId: 'nested' });
   });
 
   it('历史扫描任务走批量分类，一次调用处理多条', async () => {
@@ -412,7 +442,7 @@ describe('OrganizerService', () => {
       if (lookupFinished && !changed) {
         changed = true;
         await store.update((state) => {
-          state.corrections['example.com'] = { domain: 'example.com', action: 'keep', createdAt: 1 };
+          state.corrections['https://example.com/langgraph'] = { url: 'https://example.com/langgraph', domain: 'example.com', action: 'keep', createdAt: 1 };
         });
       }
       return load();
@@ -434,7 +464,7 @@ describe('OrganizerService', () => {
 
     expect(classifyBatch).toHaveBeenCalledTimes(2);
     expect(classifyBatch.mock.calls[0]?.[4]?.corrections).toEqual({});
-    expect(classifyBatch.mock.calls[1]?.[4]?.corrections['example.com']).toMatchObject({ action: 'keep' });
+    expect(classifyBatch.mock.calls[1]?.[4]?.corrections['https://example.com/langgraph']).toMatchObject({ action: 'keep' });
     expect((await store.load()).jobs.b1).toMatchObject({ status: 'pending_review', attempts: 1 });
     expect((await store.load()).jobs.b2).toMatchObject({ status: 'pending_review', attempts: 1 });
     expect(bookmarks.moves).toHaveLength(0);
@@ -563,7 +593,7 @@ describe('OrganizerService', () => {
       alarms: { schedule: vi.fn() }, hasProviderPermission: async () => true,
     });
     let scanNumber = 0;
-    const historicalScan = new ScanService({
+    const historicalScan = new ScanService({ scheduleApprovalResume: async () => {},
       bookmarks, store, processPending: () => historicalOrganizer.processPending(),
       approveReview: (id) => historicalOrganizer.approveReview(id), makeId: () => `scan-${++scanNumber}`,
     });
@@ -651,7 +681,7 @@ describe('OrganizerService', () => {
     expect(state.jobs.b1?.bookmark).toMatchObject({ title: 'Edited title', url: 'https://changed.test/new' });
     expect(state.reviews.b1).toMatchObject({ title: 'Edited title', url: 'https://changed.test/new', classification: { reason: 'https://changed.test/new' } });
     await instance.approveReview('b1', 'nested');
-    expect((await store.load()).corrections['changed.test']).toMatchObject({ action: 'move', folderId: 'nested' });
+    expect((await store.load()).corrections['https://changed.test/new']).toMatchObject({ action: 'move', folderId: 'nested' });
     expect((await store.load()).corrections['example.com']).toBeUndefined();
   });
 
@@ -892,7 +922,7 @@ describe('OrganizerService', () => {
     const processing = instance.onBookmarkCreated('b1', structuredClone(bookmarks.nodes.get('b1')!));
     await started;
     await store.update((state) => {
-      state.corrections['example.com'] = { domain: 'example.com', action: 'keep', createdAt: 1 };
+      state.corrections['https://example.com/langgraph'] = { url: 'https://example.com/langgraph', domain: 'example.com', action: 'keep', createdAt: 1 };
     });
     releaseTree();
     await processing;
@@ -1040,7 +1070,7 @@ describe('OrganizerService', () => {
         bookmarks: chromeBookmarks, store, classifier, notifications,
         alarms: { schedule: vi.fn() }, hasProviderPermission: async () => true,
       });
-      const historicalScan = new ScanService({
+      const historicalScan = new ScanService({ scheduleApprovalResume: async () => {},
         bookmarks: chromeBookmarks, store, processPending: () => instance.processPending(),
         approveReview: (id) => instance.approveReview(id), makeId: () => 'next-scan',
       });
@@ -1048,7 +1078,7 @@ describe('OrganizerService', () => {
         state.historicalScan = {
           id: 'scan-x', status: 'scanning', startedAt: 1, updatedAt: 1,
           eligibleTotal: 1, processedCount: 0, pendingReviewCount: 0,
-          failedCount: 0, skippedCount: 0, coveredIds: ['b1'], forceOrganize: false,
+          failedCount: 0, skippedCount: 0, coveredIds: ['b1'],
         };
         state.jobs.b1 = {
           bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
@@ -1098,7 +1128,7 @@ describe('OrganizerService', () => {
       state.historicalScan = {
         id: 'scan-x', status: 'scanning', startedAt: 1, updatedAt: 1,
         eligibleTotal: 1, processedCount: 0, pendingReviewCount: 0,
-        failedCount: 0, skippedCount: 0, coveredIds: ['b1'], forceOrganize: false,
+        failedCount: 0, skippedCount: 0, coveredIds: ['b1'],
       };
       state.jobs.b1 = {
         bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
@@ -1132,7 +1162,7 @@ describe('OrganizerService', () => {
       state.historicalScan = {
         id: 'old-scan', status: 'awaiting_review', startedAt: 1, updatedAt: 1,
         eligibleTotal: 1, processedCount: 1, pendingReviewCount: 1,
-        failedCount: 0, skippedCount: 0, coveredIds: ['b1'], forceOrganize: false,
+        failedCount: 0, skippedCount: 0, coveredIds: ['b1'],
       };
       state.reviews.b1 = {
         id: 'b1', bookmarkId: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph',
@@ -1560,7 +1590,7 @@ describe('OrganizerService', () => {
       if (wasPending && state.reviews.b1?.status === 'rejected') {
         rejectionWrites += 1;
         expect(state.jobs.b1?.status).toBe('completed');
-        expect(state.corrections['example.com']).toMatchObject({ action: 'keep', count: 1 });
+        expect(state.corrections['https://example.com/langgraph']).toMatchObject({ action: 'keep', count: 1 });
         expect(state.historicalScan).toMatchObject({ status: 'completed', pendingReviewCount: 0 });
       }
     }));
@@ -1569,7 +1599,7 @@ describe('OrganizerService', () => {
     await organizer.rejectReview('b1');
 
     expect(rejectionWrites).toBe(1);
-    expect((await store.load()).corrections['example.com']?.count).toBe(1);
+    expect((await store.load()).corrections['https://example.com/langgraph']?.count).toBe(1);
   });
 
   it('拒绝审核的状态与纠错写入失败后可重启重试，且重复请求不重复学习', async () => {
@@ -1601,7 +1631,7 @@ describe('OrganizerService', () => {
     state = await store.load();
     expect(state.reviews.b1?.status).toBe('rejected');
     expect(state.jobs.b1?.status).toBe('completed');
-    expect(state.corrections['example.com']).toMatchObject({ action: 'keep', count: 1 });
+    expect(state.corrections['https://example.com/langgraph']).toMatchObject({ action: 'keep', count: 1 });
     expect(state.historicalScan).toMatchObject({ status: 'completed', pendingReviewCount: 0, processedCount: 1 });
     expect(state.activities.filter((activity) => activity.kind === 'review_rejected')).toHaveLength(1);
   });
@@ -1610,6 +1640,7 @@ describe('OrganizerService', () => {
     const { scanId } = await scan.startHistoricalScan();
     expect(bookmarks.moves).toHaveLength(0);
     expect(await scan.approveAllHistoricalReviews(scanId)).toBe(1);
+    await scan.resumeApprovals();
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);
     expect((await store.load()).lastHistoricalUndo?.moved).toHaveLength(1);
     expect(await organizer.undoHistoricalLast()).toBe(1);
@@ -1626,6 +1657,7 @@ describe('OrganizerService', () => {
     expect(results.filter((result) => result.status === 'rejected')[0]).toMatchObject({
       reason: new Error('历史批量审批正在进行，请稍后重试。'),
     });
+    await scan.resumeApprovals();
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'dev' }]);
   });
 
@@ -1634,7 +1666,7 @@ describe('OrganizerService', () => {
       state.historicalScan = {
         id: 'scan-restart', status: 'scanning', startedAt: 1, updatedAt: 1,
         eligibleTotal: 1, processedCount: 0, pendingReviewCount: 0,
-        failedCount: 0, skippedCount: 0, coveredIds: ['b1'], forceOrganize: false,
+        failedCount: 0, skippedCount: 0, coveredIds: ['b1'],
       };
       state.jobs.b1 = {
         bookmark: { id: 'b1', title: 'LangGraph guide', url: 'https://example.com/langgraph', parentId: 'smart-root' },
@@ -1658,7 +1690,8 @@ describe('OrganizerService', () => {
     const { scanId } = await scan.startHistoricalScan();
     await bookmarks.moveBookmark('b1', 'other');
 
-    expect(await scan.approveAllHistoricalReviews(scanId)).toBe(0);
+    expect(await scan.approveAllHistoricalReviews(scanId)).toBe(1);
+    await scan.resumeApprovals();
     expect((await store.load()).reviews.b1?.status).toBe('stale');
     expect(bookmarks.moves).toEqual([{ id: 'b1', target: 'other' }]);
   });

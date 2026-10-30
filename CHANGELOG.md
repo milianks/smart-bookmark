@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-30
+
+### Changed
+
+- 全面优化 Popup、Review、Settings 及基础 UI 组件的视觉风格与亮/暗色主题层次。
+- 固定弹窗视图高度（`390px × 580px`，顶栏与底栏固定、中间内容区滚动），并为所有展开面板（`Disclosure`）及建议列表设置固定最大高度与内部滚动条，避免展开后无限拉长页面。
+
+## [0.2.1] - 2026-10-30
+
+### Fixed
+
+- 纠错改为页面 URL 范围，保留 SPA hash 路由差异，避免同域不同主题互相误伤；设置页新增清除纠错与偏好入口。
+- 收紧本地规则的弱证据匹配，避免单个中文双字词叠加同域样例后误触发自动移动。
+- Popup 与 Review 自动刷新后台进度，并忽略乱序返回的旧状态；设置页明确默认接管范围。
+- 内容辅助的字符预算实际影响正文采样，输出摘录上限固定为 500 字符，修正文案中的准确率与费用暗示。
+- 批量审批采用持久化分批队列，支持 Worker 重启恢复、失败重试；修复审批异常后停留在“处理中”的状态。
+- 完成扫描的统计不再因历史记录裁剪而改变。
+
+### Changed
+
+- 书签边界与路径检查改读实时祖先链；合并并发状态读取，跳过无变化写入，设置草稿增加防抖。
+- 终态审核记录保留最近 250 条，活动和恢复引用除外；摘要标签保留最近 2,000 条，删除书签时同步清理。
+- 移除无效的 `forceOrganize` 设置、未使用的持久化 `pageProfiles` 与旧历史枚举代码。
+- 移除 `identity.email` 权限，新建根目录统一命名为“智能书签”，保留已有根目录 ID 和名称。
+- 固定 WXT 与 React module 的现有依赖版本，保留 MV3 恢复、Zod 校验与无静态 host 权限边界。
+
+### Migration
+
+- 旧版按域名学习的纠错规则升级后重置，避免继续应用到同站其他页面；现有书签位置不变。
+
 ## [0.2.0] - 2026-10-23
 
 ### Added
@@ -49,5 +79,7 @@
 
 - 待确认视图嵌入 Popup，统一宽度与排版，修复布局跳动。
 
-[Unreleased]: https://github.com/milianks/smart-bookmark/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/milianks/smart-bookmark/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/milianks/smart-bookmark/compare/v0.2.1...v0.2.2
+[0.2.1]: https://github.com/milianks/smart-bookmark/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/milianks/smart-bookmark/releases/tag/v0.2.0

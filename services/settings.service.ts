@@ -50,6 +50,14 @@ export class SettingsService {
     await this.deps.store.update((state) => { delete state.settingsDraft; });
   }
 
+  async clearCorrections(): Promise<void> {
+    await this.deps.store.update((state) => {
+      state.corrections = {};
+      state.preferences = {};
+      state.cache = {};
+    });
+  }
+
   async testProvider(): Promise<void> {
     const state = await this.deps.store.load();
     if (!state.settings.apiKey.trim()) throw new Error('请先保存 API Key。');

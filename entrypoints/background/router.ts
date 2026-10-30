@@ -10,7 +10,6 @@ const SettingsPatchSchema = z.object({
   model: z.string().trim().min(1).max(200).optional(),
   confidenceThreshold: z.number().min(0.5).max(1).optional(),
   mode: z.enum(['automatic', 'confirm']).optional(),
-  forceOrganize: z.boolean().optional(),
   organizeExternalRoots: z.boolean().optional(),
   notificationsEnabled: z.boolean().optional(),
   successNotifications: z.boolean().optional(),
@@ -27,6 +26,7 @@ export const RequestSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('settings-draft:get') }).strict(),
   z.object({ type: z.literal('settings-draft:set'), draft: SettingsDraftSchema }).strict(),
   z.object({ type: z.literal('settings-draft:clear') }).strict(),
+  z.object({ type: z.literal('corrections:clear') }).strict(),
   z.object({ type: z.literal('review:approve'), id: z.string().min(1), overrideFolderId: z.string().trim().min(1).max(200).optional() }).strict(),
   z.object({ type: z.literal('review:reject'), id: z.string().min(1) }).strict(),
   z.object({ type: z.literal('undo:last') }).strict(),
@@ -55,6 +55,7 @@ export interface SettingsFacade {
   getSettingsDraft(): Promise<SettingsDraft | null>;
   updateSettingsDraft(draft: SettingsDraft): Promise<void>;
   clearSettingsDraft(): Promise<void>;
+  clearCorrections(): Promise<void>;
 }
 
 export interface MetadataFacade {
@@ -88,6 +89,9 @@ export async function handleRequest(request: RuntimeRequest, services: RouterSer
       return { saved: true };
     case 'settings-draft:clear':
       await settings.clearSettingsDraft();
+      return { saved: true };
+    case 'corrections:clear':
+      await settings.clearCorrections();
       return { saved: true };
     case 'review:approve':
       await organizer.approveReview(request.id, request.overrideFolderId);

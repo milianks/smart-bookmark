@@ -7,6 +7,136 @@ import { OpenAICompatibleProvider } from '../lib/ai/openai-compatible';
 const STORAGE_KEY = 'ai-bookmark-manager.state.v1';
 
 describe('ChromeStateRepository', () => {
+  it('coalesces simultaneous reads without sharing mutable state or retaining stale reads', async () => {
+    const values: Record<string, unknown> = { [STORAGE_KEY]: emptyPersistedState() };
+    const storage: LocalStorageArea = {
+      get: vi.fn(async (key) => ({ [key]: values[key] })),
+      set: vi.fn(async (items) => { Object.assign(values, structuredClone(items)); }),
+    };
+    const repository = new ChromeStateRepository(storage);
+    const [first, second] = await Promise.all([repository.load(), repository.load()]);
+    expect(storage.get).toHaveBeenCalledTimes(1);
+    first.settings.model = 'changed by caller';
+    expect(second.settings.model).toBe(DEFAULT_SETTINGS.model);
+    (values[STORAGE_KEY] as PersistedState).settings.model = 'external change';
+    expect((await repository.load()).settings.model).toBe('external change');
+    expect(storage.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('skips unchanged writes and keeps serialized mutations durable after a failed write', async () => {
+    const values: Record<string, unknown> = { [STORAGE_KEY]: emptyPersistedState() };
+    let fail = false;
+    const storage: LocalStorageArea = {
+      get: vi.fn(async (key) => ({ [key]: values[key] })),
+      set: vi.fn(async (items) => {
+        if (fail) throw new Error('storage failed');
+        Object.assign(values, structuredClone(items));
+      }),
+    };
+    const repository = new ChromeStateRepository(storage);
+    await repository.update(() => undefined);
+    expect(storage.set).not.toHaveBeenCalled();
+    await Promise.all([
+      repository.update((state) => { state.settings.model = 'saved model'; }),
+      repository.update((state) => { state.settings.enabled = false; }),
+    ]);
+    expect((await new ChromeStateRepository(storage).load()).settings).toMatchObject({ model: 'saved model', enabled: false });
+    expect(storage.set).toHaveBeenCalledTimes(2);
+    fail = true;
+    await expect(repository.update((state) => { state.settings.model = 'failed model'; })).rejects.toThrow('storage failed');
+    fail = false;
+    await repository.update((state) => { state.settings.successNotifications = true; });
+    expect((await repository.load()).settings).toMatchObject({ model: 'saved model', successNotifications: true });
+  });
+
+  it('bounds terminal reviews and metadata while preserving pending, active-scan, and recovery reviews', async () => {
+    const state = emptyPersistedState();
+    const review = (id: string, createdAt: number, status: 'approved' | 'pending' | 'approving' = 'approved') => ({
+      id, bookmarkId: id, title: id, url: 'https://example.test', sourceParentId: 'root',
+      classification: { action: 'keep' as const, confidence: 0.5, reason: 'kept' },
+      source: 'ai' as const, createdAt, status,
+    });
+    state.reviews = Object.fromEntries(Array.from({ length: 300 }, (_, index) => [`r${index}`, review(`r${index}`, index)]));
+    state.reviews.pending = review('pending', 0, 'pending');
+    state.reviews.approving = review('approving', 0, 'approving');
+    state.reviews.active = { ...review('active', 0), scanId: 'active-scan' };
+    state.reviews.recovery = review('recovery', 0);
+    state.reviews.queued = review('queued', 0);
+    state.pendingOperation = { bookmarkId: 'recovery', title: 'Recovery', fromFolderId: 'root', toFolderId: 'target', movedAt: 1, operationId: 'operation', state: 'prepared', kind: 'review', reviewId: 'recovery' };
+    state.historicalScan = { id: 'active-scan', status: 'awaiting_review', startedAt: 1, updatedAt: 1, eligibleTotal: 1, processedCount: 1, pendingReviewCount: 1, failedCount: 0, skippedCount: 0, coveredIds: ['active'] };
+    state.historicalApproval = { scanId: 'other-scan', reviewIds: ['queued', 'queued'] };
+    state.bookmarkMetadata = Object.fromEntries(Array.from({ length: 2005 }, (_, index) => [`b${index}`, { summary: 'Summary', tags: [], generatedAt: index }]));
+    const storage: LocalStorageArea = { get: async (key) => ({ [key]: state }), set: async () => undefined };
+    const loaded = await new ChromeStateRepository(storage).load();
+    expect(Object.keys(loaded.reviews)).toHaveLength(255);
+    for (const id of ['pending', 'approving', 'active', 'recovery', 'queued', 'r299']) expect(loaded.reviews[id]).toBeDefined();
+    expect(loaded.reviews.r0).toBeUndefined();
+    expect(loaded.historicalApproval?.reviewIds).toEqual(['queued']);
+    expect(Object.keys(loaded.bookmarkMetadata)).toHaveLength(2000);
+    expect(loaded.bookmarkMetadata.b0).toBeUndefined();
+    expect(loaded.bookmarkMetadata.b2004).toBeDefined();
+  });
+
+  it('removes legacy force flags without discarding the remaining settings draft', async () => {
+    const values: Record<string, unknown> = { [STORAGE_KEY]: {
+      ...emptyPersistedState(), settings: { ...DEFAULT_SETTINGS, forceOrganize: true },
+      settingsDraft: { model: 'draft model', forceOrganize: true },
+      pageProfiles: { obsolete: {} },
+    } };
+    const storage: LocalStorageArea = {
+      get: async (key) => ({ [key]: values[key] }),
+      set: async (items) => { Object.assign(values, items); },
+    };
+    const repository = new ChromeStateRepository(storage);
+    const loaded = await repository.load();
+    expect(loaded.settings).not.toHaveProperty('forceOrganize');
+    expect(loaded.settingsDraft).toEqual({ model: 'draft model' });
+    expect(loaded).not.toHaveProperty('pageProfiles');
+    await repository.update((state) => { state.settings.enabled = false; });
+    expect(values[STORAGE_KEY]).not.toHaveProperty('pageProfiles');
+  });
+
+  it('keeps only bounded URL-scoped corrections and rejects mismatched keys and legacy domain rules', async () => {
+    const corrections: Record<string, unknown> = Object.fromEntries(Array.from({ length: 205 }, (_, index) => {
+      const url = `https://github.com/project/${index}`;
+      return [url, { url, domain: 'github.com', action: 'keep', createdAt: index }];
+    }));
+    corrections['github.com'] = { domain: 'github.com', action: 'keep', createdAt: 1000 };
+    corrections['https://github.com/mismatch'] = { url: 'https://github.com/other', action: 'keep', createdAt: 1000 };
+    corrections['javascript:alert(1)'] = { url: 'javascript:alert(1)', action: 'keep', createdAt: 1000 };
+    corrections['https://github.com/canonical/?utm_source=test'] = {
+      url: 'https://github.com/canonical', action: 'move', folderId: 'folder', createdAt: 1000,
+    };
+    const storage: LocalStorageArea = { get: async (key) => ({ [key]: { ...emptyPersistedState(), corrections } }), set: async () => undefined };
+    const loaded = await new ChromeStateRepository(storage).load();
+    expect(Object.keys(loaded.corrections)).toHaveLength(200);
+    expect(loaded.corrections['github.com']).toBeUndefined();
+    expect(loaded.corrections['https://github.com/mismatch']).toBeUndefined();
+    expect(loaded.corrections['javascript:alert(1)']).toBeUndefined();
+    expect(loaded.corrections['https://github.com/project/0']).toBeUndefined();
+    expect(loaded.corrections['https://github.com/canonical']).toMatchObject({ url: 'https://github.com/canonical', domain: 'github.com', action: 'move', folderId: 'folder' });
+  });
+
+  it('persists independent learned decisions for SPA hash routes', async () => {
+    const values: Record<string, unknown> = {};
+    const storage: LocalStorageArea = {
+      get: async (key) => ({ [key]: values[key] }),
+      set: async (items) => { Object.assign(values, structuredClone(items)); },
+    };
+    const repository = new ChromeStateRepository(storage);
+    const first = 'https://example.test/app#/frontend';
+    const second = 'https://example.test/app#/backend';
+    await repository.update((state) => {
+      state.corrections[first] = { url: first, domain: 'example.test', action: 'move', folderId: 'frontend', createdAt: 1 };
+      state.corrections[second] = { url: second, domain: 'example.test', action: 'keep', createdAt: 2 };
+      state.corrections['https://example.test/app#/wrong-key'] = { url: first, domain: 'example.test', action: 'keep', createdAt: 3 };
+    });
+    const loaded = await new ChromeStateRepository(storage).load();
+    expect(Object.keys(loaded.corrections)).toHaveLength(2);
+    expect(loaded.corrections[first]).toMatchObject({ action: 'move', folderId: 'frontend' });
+    expect(loaded.corrections[second]).toMatchObject({ action: 'keep' });
+  });
+
   it('adds the default protocol to legacy settings and keeps valid saved values', async () => {
     const values: Record<string, unknown> = {
       [STORAGE_KEY]: {
@@ -44,7 +174,6 @@ describe('ChromeStateRepository', () => {
       apiKey: 'fixture',
       confidenceThreshold: 0.73,
       mode: 'confirm',
-      forceOrganize: true,
       notificationsEnabled: false,
       successNotifications: true,
     });
@@ -277,7 +406,7 @@ describe('ChromeStateRepository', () => {
     expect(normalizeCache({ [oversized.key]: oversized })).toEqual({});
   });
 
-  it('defaults new content-assist settings and normalizes preferences/pageProfiles', async () => {
+  it('defaults content-assist settings and removes unused legacy pageProfiles', async () => {
     const values: Record<string, unknown> = {
       [STORAGE_KEY]: {
         version: 1,
@@ -304,8 +433,7 @@ describe('ChromeStateRepository', () => {
       contentAssistDisabledSites: [],
     });
     expect(Object.keys(loaded.preferences)).toEqual(['repo|AI Agent']);
-    expect(Object.keys(loaded.pageProfiles)).toEqual(['https://github.com/a/b']);
-    expect(loaded.pageProfiles['https://github.com/a/b']).toMatchObject({ summary: 'An agent', contentType: 'repo' });
+    expect(loaded).not.toHaveProperty('pageProfiles');
   });
 });
 

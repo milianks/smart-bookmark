@@ -14,6 +14,7 @@ export interface ScanServiceDependencies {
   store: StateRepository;
   processPending(): Promise<void>;
   approveReview(id: string): Promise<void>;
+  scheduleApprovalResume(delayMs: number): Promise<void>;
   now?: () => number;
   makeId?: (prefix: string) => string;
 }
@@ -52,7 +53,7 @@ export class ScanService {
         id: scanId, status: 'scanning' as const, startedAt: now, updatedAt: now,
         eligibleTotal: candidates.length, processedCount: 0, pendingReviewCount: 0,
         failedCount: 0, skippedCount: candidates.length - fresh.length,
-        coveredIds: candidates.map((candidate) => candidate.id), forceOrganize: false,
+        coveredIds: candidates.map((candidate) => candidate.id),
       };
       await this.deps.store.update((current) => {
         current.historicalScan = scan;
@@ -77,27 +78,54 @@ export class ScanService {
   }
 
   async approveAllHistoricalReviews(scanId?: string): Promise<number> {
-    if (this.approving) throw new Error('历史批量审批正在进行，请稍后重试。');
-    this.approving = true;
-    try {
-      const state = await this.deps.store.load();
+    let count = 0;
+    await this.deps.store.update((state) => {
+      if (state.historicalApproval) throw new Error('历史批量审批正在进行，请稍后重试。');
       const target = scanId ?? state.historicalScan?.id;
       if (!target) throw new Error('没有可处理的历史扫描。');
-      const ids = Object.values(state.reviews)
+      const reviewIds = Object.values(state.reviews)
         .filter((item) => item.scanId === target && item.status === 'pending')
         .sort((a, b) => a.createdAt - b.createdAt)
         .map((item) => item.id);
-      let count = 0;
-      for (const id of ids) {
-        try {
-          await this.deps.approveReview(id);
-          count += 1;
-        } catch {
-          // Each item is independently revalidated; stale or failed items do not block the batch.
+      count = reviewIds.length;
+      if (count > 0) state.historicalApproval = { scanId: target, reviewIds };
+    });
+    if (count > 0) await this.deps.scheduleApprovalResume(1);
+    return count;
+  }
+
+  async resumeApprovals(): Promise<void> {
+    if (this.approving) return;
+    this.approving = true;
+    try {
+      const initial = await this.deps.store.load();
+      if (!initial.historicalApproval) return;
+      // Arm recovery before moving anything; each item retains the organizer's WAL and lock.
+      await this.deps.scheduleApprovalResume(30_000);
+      const startedAt = this.now();
+      for (let processed = 0; processed < 10 && this.now() - startedAt < 10_000; processed += 1) {
+        const state = await this.deps.store.load();
+        const queue = state.historicalApproval;
+        const id = queue?.reviewIds[0];
+        if (!queue || !id) break;
+        const review = state.reviews[id];
+        if (review?.scanId === queue.scanId && ['pending', 'approving'].includes(review.status)) {
+          try {
+            await this.deps.approveReview(id);
+          } catch (error) {
+            const latest = await this.deps.store.load();
+            // Unreconciled work stays queued for the recovery alarm; settled failures can be retried manually.
+            if (latest.pendingOperation?.reviewId === id || latest.reviews[id]?.status === 'approving') throw error;
+          }
         }
+        await this.deps.store.update((current) => {
+          if (current.historicalApproval?.scanId !== queue.scanId) return;
+          current.historicalApproval.reviewIds = current.historicalApproval.reviewIds.filter((item) => item !== id);
+          if (current.historicalApproval.reviewIds.length === 0) delete current.historicalApproval;
+          refreshHistoricalScan(current, queue.scanId, this.now());
+        });
       }
-      await this.refresh(target);
-      return count;
+      if ((await this.deps.store.load()).historicalApproval) await this.deps.scheduleApprovalResume(1);
     } finally {
       this.approving = false;
     }

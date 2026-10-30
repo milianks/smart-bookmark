@@ -28,7 +28,8 @@ Use this contract when changing the MV3 background, bookmark or folder services,
   For `settings:update`, normalize a shallow copy of `request.settings` so the parsed request is not mutated; return no API key or provider payload.
 - Classification input contains a bookmark's title, original URL, domain, current folder ID/path, and optional derived page profile, plus folder summaries from the persisted smart bookmark root. Each optional `samples` array contains at most three direct-child HTTP(S) bookmarks with bounded `{title, url, hostname}` fields. Never send the full bookmark tree or raw page content to the provider.
 - The local classifier may use bookmark title, URL path, domain-specific hints, and bounded folder samples. A shared domain alone is not enough to trigger a local automatic move; require topical overlap from title/path/sample text or an exact sample URL. A generic folder token alone is not strong evidence.
-- Re-evaluate domain corrections, topic/content-type preferences, and deterministic rules before looking up an AI cache entry. Rank provider folders using the estimated budget, not a fixed six-folder limit; validate destinations against the complete supplied smart-root folder set, not only the candidates. See the classification cache scenario below for the selection and reuse contract.
+- Corrections use `correctionUrl`: normalized URL with its fragment preserved, so SPA routes cannot share hard overrides. Legacy domain-only rules are dropped; `corrections:clear` clears corrections, preferences and AI cache.
+- Re-evaluate page-URL corrections, topic/content-type preferences, and deterministic rules before looking up an AI cache entry. Rank provider folders using the estimated budget, not a fixed six-folder limit; validate destinations against the complete supplied smart-root folder set, not only the candidates. See the classification cache scenario below for the selection and reuse contract.
 - Cache validated independent per-bookmark decisions across single and batch transports only under the shared decision-policy context and proven successful source request; a folder change outside that context need not invalidate a valid hit.
 - Classification output is strict Zod data: `move` requires `targetFolderId`; `suggest_folder` requires a name and `parentId`; `keep` has no destination; confidence is in `[0,1]`.
 - Persist jobs, review items, settings and settings drafts, cache, activity history, import marker, undo record, and pending mutation intent through `chrome.storage.local`. Keep API keys out of sync storage, logs, errors, and notifications.
@@ -36,9 +37,9 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 - During `resume()`, query permission for the currently configured provider origin. Promote `awaiting_permission` jobs only when an API key exists and that exact origin is granted; clear the stale permission error before requeueing.
 - Persist a pending move intent before calling `chrome.bookmarks.move`; re-read the bookmark and validate its source and destination immediately before mutation. Never delete a bookmark or folder.
 - If `chrome.bookmarks.move` rejects, reconcile the persisted intent immediately against the bookmark's live parent. Treat the move as committed if the target parent is observed; clear the intent and fail safely if the source remains; mark the operation stale/skipped if the bookmark is elsewhere.
-- The background initializes one account-named folder under the editable `bookmarks-bar` root, stores its ID in local state, and creates the default first-level folders once. If `chrome.identity.getProfileUserInfo()` has no email, use `bookmark` as the owner name.
-- Automatic classification, manual metadata generation, historical scans, review mutations, undo, and recovery are limited to that persisted smart root and its descendants. Re-read the live tree before sending bookmark data to a provider or mutating Chrome bookmarks.
-- Retain the legacy `forceOrganize` setting only for storage compatibility; it must not expand the smart-root boundary.
+- The background initializes one folder named `智能书签` under the editable `bookmarks-bar` root, stores its ID in local state, and creates default first-level folders once. Existing persisted root IDs and names are preserved; no identity API or email permission is used.
+- Classification destinations, metadata and historical scans are limited to the persisted smart root. New bookmarks in built-in roots participate only when `organizeExternalRoots` is enabled. Boundary and path queries read live ancestor chains, including managed ancestors; classification context validation still uses a fresh tree before committing results. No long-lived tree cache is used.
+- Drop legacy `forceOrganize` settings and unused persisted `pageProfiles` during normalization; retain other valid draft settings.
 - Automatic moves require automatic mode and confidence at or above the configured threshold. Folder creation always waits for explicit review approval. Review approval must be idempotent and revalidate live bookmark/folder state.
 
 ### 4. Validation & Error Matrix
@@ -72,7 +73,7 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 - Assert missing provider permission leaves a provider-dependent job waiting, while eligible local/cache results remain available; granting the exact configured origin lets `resume()` classify waiting work once.
 - Assert root-outside bookmarks and targets never reach the provider, review creation, folder creation, movement, or undo; changing folder names and nesting changes the next classification's live summaries.
 - Assert every failed/stale path leaves the bookmark parent unchanged and does not call create/move unexpectedly.
-- Inspect the production manifest: required permissions are `bookmarks`, `storage`, `notifications`, `alarms`, and `identity.email`; provider origins remain optional and no static all-site permission is present.
+- Inspect the production manifest: required permissions are `bookmarks`, `storage`, `notifications`, `alarms`, and `scripting`; provider origins remain optional and no static all-site permission is present.
 
 ### 7. Wrong vs Correct
 
@@ -122,7 +123,7 @@ Use this contract when changing classification inputs, candidates, learned decis
 
 ### 3. Contracts
 
-- Require a configured API key first. For every input re-evaluate domain corrections, page-profile preferences, and full-folder deterministic rules, with the current threshold. These local decisions are not AI cache entries.
+- Require a configured API key first. For every input re-evaluate page-URL corrections, page-profile preferences, and full-folder deterministic rules, with the current threshold. These local decisions are not AI cache entries.
 - Rank candidates independently for each AI input, identically in single and batch processing. Selection uses an estimated 10,000-byte folder budget; under budget, or with weak/ambiguous evidence, it retains the supplied folders in order. Meaningful evidence can rank/select candidates with a floor of 12 and stripped samples; retain the current folder when present. This is not a six-folder limit or exact serialized-size guarantee.
 - Resolve local outcomes, then check per-item `single` entries. Partition only misses by equal ordered candidate context into provider groups. Ordinary shared candidates produce one request; divergent contexts may need several. Neither cache hits nor companions may change another item's candidates. Preserve original outcome indexes across groups.
 - Recompute recent decisions from up to five corrections by descending `createdAt`, resolving folder paths against the complete supplied folder list. Key the original input, including original URL and optional profile, protocol, normalized endpoint, model, credential generation, and output-affecting request context. Use HMAC-SHA-256 with the API key as secret; never persist secret material, request bodies, raw content, or derived profiles solely to match cache entries.
@@ -246,19 +247,20 @@ Use this contract when adding or changing the explicit scan of existing bookmark
 ### 2. Signatures
 
 - `enumerateHistoricalBookmarksWithinRoot(tree: BookmarkNode[], rootId: string): HistoricalBookmarkCandidate[]`.
-- `OrganizerService.startHistoricalScan(): Promise<{ scanId: string; eligibleTotal: number }>`.
-- `OrganizerService.approveAllHistoricalReviews(scanId?: string): Promise<number>`.
+- `ScanService.startHistoricalScan(): Promise<{ scanId: string; eligibleTotal: number }>`.
+- `ScanService.approveAllHistoricalReviews(scanId?: string): Promise<number>`.
 - `OrganizerService.undoHistoricalLast(): Promise<number>`.
-- `HistoricalScanState`: `{ id, status, startedAt, updatedAt, eligibleTotal, processedCount, pendingReviewCount, failedCount, skippedCount, coveredIds, forceOrganize }`.
-- Historical `BookmarkJob` and `ReviewItem` records carry optional `scanId`; `DashboardState` exposes only the scan summary, never `coveredIds` or `forceOrganize`.
+- `HistoricalScanState`: `{ id, status, startedAt, updatedAt, eligibleTotal, processedCount, pendingReviewCount, failedCount, skippedCount, coveredIds }`.
+- Historical `BookmarkJob` and `ReviewItem` records carry optional `scanId`; `DashboardState` exposes only the scan summary, never `coveredIds` or approval queue IDs.
 
 ### 3. Contracts
 
 - A scan is explicit and preview-only. It never moves a bookmark or creates a folder during classification.
-- Enumeration accepts only editable HTTP(S) bookmark nodes in the persisted smart-root subtree. Managed branches, folders, and unsupported URL schemes are skipped; `forceOrganize` does not expand this boundary.
+- Enumeration accepts only editable HTTP(S) bookmark nodes in the persisted smart-root subtree. Managed branches, folders, and unsupported URL schemes are skipped.
 - Scan jobs persist before classification and reuse the existing classifier, cache, folder-target validation, review creation, pending move intent, and worker recovery paths.
 - Historical `move` and `suggest_folder` results always become pending reviews, independent of normal automatic mode or confidence threshold. `keep` completes without mutation.
-- `scan:approve-all` processes a snapshot sequentially through the same live source/target checks as per-item approval. Stale, deleted, or failed items do not abort other items. An instance lock rejects a concurrent batch request.
+- `scan:approve-all` durably enqueues review IDs and returns the queued count immediately. `ScanService.resumeApprovals` arms a recovery alarm before processing, handles at most 10 items or 10 seconds per wake, and checkpoints each item through the existing serialized approval/WAL path. While the worker is alive a short timer continues the next chunk; the already-armed alarm and startup recover remaining IDs after shutdown; approved items are skipped after checkpoint failures. The persisted queue rejects duplicate batches; individual failures restore pending state for manual retry. If reconciliation fails, the item stays queued for the recovery alarm. Batch undo is blocked while approval remains queued.
+- Completed/failed scan totals survive terminal job/review pruning; do not recompute old approvals as skipped merely because records expired.
 - Historical successful moves append to the latest batch undo record. `undo:historical-last` revalidates every recorded bookmark and moves back only items still in the recorded destination; it never deletes empty folders or overwrites manual moves.
 - Missing scan fields in existing version-1 local state normalize to empty/undefined values. API keys and provider payloads never enter scan state, dashboard data, activity messages, or diagnostics.
 
@@ -309,7 +311,7 @@ This bypasses the protection boundary, preview requirement, durable scan job, li
 const candidates = enumerateHistoricalBookmarksWithinRoot(tree, smartBookmarkRootId);
 await store.update((state) => persistScanJobs(state, candidates, scanId));
 await classifyHistoricalJobs(scanId); // move/suggest_folder -> durable pending review
-await organizer.approveAllHistoricalReviews(scanId); // sequential live checks and intents
+await scan.approveAllHistoricalReviews(scanId); // durable queue; alarms run live checks and intents
 ```
 
 Separate enumeration/classification from mutation, persist before work, and route every approved move through the existing organizer recovery contract.

@@ -11,7 +11,7 @@ import {
   type Settings,
 } from '../types/domain';
 import { normalizeCache, type StateRepository } from '../lib/storage/repository';
-import { hostnameKey } from '../lib/utils/ids';
+import { correctionUrl } from '../lib/utils/ids';
 import type { ClassificationInput, RecentCorrection } from '../lib/ai/prompts';
 import type { ClassifierProvider } from '../lib/ai/openai-compatible';
 import { ProviderError } from '../lib/ai/openai-compatible';
@@ -256,7 +256,7 @@ function providerConfig(settings: Settings): ProviderConfig {
 }
 
 function localDecision(input: ClassificationInput, folders: FolderSummary[], settings: Settings, state: PersistedState): ClassificationResult | null {
-  const correction = applyCorrection(state.corrections[hostnameKey(input.domain)], input, folders);
+  const correction = applyCorrection(state.corrections[correctionUrl(input.url)], input, folders);
   if (correction) return correction;
   const preference = applyPreference(state.preferences, input, folders);
   if (preference) return preference;
@@ -327,9 +327,9 @@ function applyCorrection(
   input: ClassificationInput,
   folders: FolderSummary[],
 ): ClassificationResult | null {
-  if (!correction) return null;
+  if (!correction?.url || correction.url !== correctionUrl(input.url)) return null;
   if (correction.action === 'keep') {
-    return { action: 'keep', confidence: 0.9, reason: '此前你选择保留同站点书签原位。' };
+    return { action: 'keep', confidence: 0.9, reason: '此前你选择保留此页面书签原位。' };
   }
   const target = folders.find((folder) => folder.id === correction.folderId && folder.unmodifiable !== 'managed' && folder.folderType !== 'managed');
   if (!target || target.id === input.currentFolderId) return null;
@@ -337,7 +337,7 @@ function applyCorrection(
     action: 'move',
     targetFolderId: target.id,
     confidence: 0.93,
-    reason: `按此前你确认的归类，同站点书签放入 ${target.path}。`,
+    reason: `按此前你确认的归类，此页面书签放入 ${target.path}。`,
   };
 }
 
@@ -379,6 +379,7 @@ function recentUserDecisions(
     .slice(0, 5)
     .map((entry) => ({
       domain: entry.domain,
+      ...(entry.url ? { url: entry.url } : {}),
       action: entry.action,
       ...(entry.folderId
         ? { folderPath: folders.find((folder) => folder.id === entry.folderId)?.path }

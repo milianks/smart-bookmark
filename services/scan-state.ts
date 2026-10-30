@@ -5,6 +5,10 @@ export function refreshHistoricalScan(state: PersistedState, scanId: string, now
   if (!scan || scan.id !== scanId) return;
   const jobs = scan.coveredIds.map((id) => state.jobs[id]).filter((job) => job?.scanId === scanId) as BookmarkJob[];
   const reviews = Object.values(state.reviews).filter((item) => item.scanId === scanId);
+  // Completed totals outlive pruned job/review records; only reopened work changes them.
+  if (['completed', 'failed'].includes(scan.status)
+    && !jobs.some((job) => ['queued', 'processing', 'awaiting_configuration', 'awaiting_permission', 'pending_review'].includes(job.status))
+    && !reviews.some((item) => item.status === 'pending' || item.status === 'approving')) return;
   const scanJobIds = new Set(jobs.map((job) => job.bookmark.id));
   const scanReviewIds = new Set(reviews.map((item) => item.bookmarkId));
   const alreadyCovered = scan.coveredIds.filter((id) => !scanJobIds.has(id) && !scanReviewIds.has(id)).length;
@@ -26,6 +30,6 @@ export function historicalScanSummary(
   scan: HistoricalScanState,
   hasUndo: boolean,
 ): DashboardState['historicalScan'] {
-  const { coveredIds: _coveredIds, forceOrganize: _forceOrganize, ...summary } = scan;
+  const { coveredIds: _coveredIds, ...summary } = scan;
   return { ...summary, hasUndo };
 }

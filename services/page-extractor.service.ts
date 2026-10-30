@@ -45,7 +45,7 @@ export class PageExtractorService {
   }
 
   /**
-   * Best-effort: returns a distilled {@link PageProfile} or `undefined` whenever extraction is
+   * Best-effort: returns a bounded sampled {@link PageProfile} or `undefined` whenever extraction is
    * disabled, the site is excluded, the page is unavailable, or anything fails. Never throws.
    */
   async extractProfile(url: string, settings: Settings, hostname: string): Promise<PageProfile | undefined> {
@@ -61,17 +61,25 @@ export class PageExtractorService {
     try {
       const page = await this.deps.port.extract(url, settings.extractCharLimit);
       if (!page || !page.text || page.text.trim().length === 0) return undefined;
-      return buildPageProfile(page, this.now());
+      return buildPageProfile(page, this.now(), settings.extractCharLimit);
     } catch {
       return undefined;
     }
   }
 }
 
-export function buildPageProfile(page: ExtractedPage, now: number): PageProfile {
-  const text = page.text.replace(/\s+/g, ' ').trim();
+export function buildPageProfile(page: ExtractedPage, now: number, limit = 3000): PageProfile {
+  const text = page.text.slice(0, limit).replace(/\s+/g, ' ').trim();
   const description = page.description.replace(/\s+/g, ' ').trim();
-  const summary = (description || text.slice(0, 300)).trim().slice(0, 500) || page.title.trim().slice(0, 500) || '(无描述)';
+  const introduction = description.slice(0, 150);
+  const budget = 500 - introduction.length - (introduction ? 1 : 0);
+  const width = Math.floor((budget - 2) / 3);
+  const excerpt = text.length <= budget ? text : [
+    text.slice(0, width),
+    text.slice(Math.floor((text.length - width) / 2), Math.floor((text.length - width) / 2) + width),
+    text.slice(-width),
+  ].join('…');
+  const summary = [introduction, excerpt].filter(Boolean).join(' ') || page.title.trim().slice(0, 500) || '(无描述)';
   return {
     summary,
     topics: collectTopics(page),

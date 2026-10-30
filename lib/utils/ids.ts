@@ -17,7 +17,14 @@ export function normalizedUrl(rawUrl: string): string {
   return url.toString();
 }
 
-/** Stable per-domain key for correction learning; accepts full URLs or bare hostnames. */
+/** Keep hash routes distinct when learning a decision for one page. */
+export function correctionUrl(rawUrl: string): string {
+  const url = new URL(normalizedUrl(rawUrl));
+  url.hash = new URL(rawUrl).hash;
+  return url.toString();
+}
+
+/** Canonical hostname label; accepts full URLs or bare hostnames. */
 export function hostnameKey(value: string): string {
   let host = value;
   try {

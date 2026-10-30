@@ -55,6 +55,16 @@ describe('SettingsService', () => {
     expect(await store.load()).toMatchObject({ settings: { apiKey: 'A' }, credentialGeneration: 2 });
   });
 
+  it('clears learned corrections, preferences and cached decisions without changing settings', async () => {
+    const initial = emptyPersistedState();
+    initial.corrections['https://example.test/a'] = { url: 'https://example.test/a', domain: 'example.test', action: 'keep', createdAt: 1 };
+    initial.preferences.topic = { key: 'topic', topics: ['topic'], contentType: 'doc', folderId: 'folder', weight: 1, count: 1, createdAt: 1, updatedAt: 1 };
+    const store = new MemoryStateRepository(initial);
+    const service = new SettingsService({ store, classifier: { classify: vi.fn() }, hasProviderPermission: async () => true, afterUpdate: async () => {} });
+    await service.clearCorrections();
+    expect(await store.load()).toMatchObject({ corrections: {}, preferences: {}, cache: {}, settings: initial.settings });
+  });
+
   it('rejects provider testing without a saved API key', async () => {
     const store = new MemoryStateRepository();
     const classifier: ClassifierPort = { classify: vi.fn(async () => ({ result: { action: 'keep' as const, confidence: 0.5, reason: 'test' }, source: 'ai' as const })), testProvider: vi.fn(async () => {}) };

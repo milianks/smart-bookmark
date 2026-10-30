@@ -53,7 +53,6 @@ export const SettingsSchema = z.object({
   apiKey: z.string(),
   confidenceThreshold: z.number().min(0.5).max(1),
   mode: z.enum(['automatic', 'confirm']),
-  forceOrganize: z.boolean(),
   notificationsEnabled: z.boolean(),
   successNotifications: z.boolean(),
   organizeExternalRoots: z.boolean(),
@@ -75,7 +74,6 @@ export const DEFAULT_SETTINGS: Settings = {
   apiKey: '',
   confidenceThreshold: 0.85,
   mode: 'automatic',
-  forceOrganize: false,
   notificationsEnabled: true,
   successNotifications: false,
   organizeExternalRoots: false,
@@ -98,7 +96,7 @@ export interface BookmarkSample {
   hostname: string;
 }
 
-/** Lightweight, non-verbatim page profile derived from an extracted page. Never stores raw text. */
+/** Bounded page excerpt and topics; never stores the full extracted text. */
 export interface PageProfile {
   summary: string;
   topics: string[];
@@ -165,6 +163,7 @@ export interface ReviewItem {
 }
 
 export interface CorrectionEntry {
+  url?: string;
   domain: string;
   action: 'move' | 'keep';
   folderId?: string;
@@ -200,7 +199,6 @@ export interface HistoricalScanState {
   failedCount: number;
   skippedCount: number;
   coveredIds: string[];
-  forceOrganize: boolean;
   lastError?: string;
 }
 
@@ -292,10 +290,10 @@ export interface PersistedState {
   bookmarkMetadata: Record<string, BookmarkMetadata>;
   corrections: Record<string, CorrectionEntry>;
   preferences: Record<string, PreferenceRule>;
-  pageProfiles: Record<string, PageProfile>;
+  historicalApproval?: { scanId: string; reviewIds: string[] };
 }
 
-export interface HistoricalScanSummary extends Omit<HistoricalScanState, 'coveredIds' | 'forceOrganize'> {
+export interface HistoricalScanSummary extends Omit<HistoricalScanState, 'coveredIds'> {
   hasUndo: boolean;
 }
 
@@ -313,6 +311,7 @@ export interface DashboardState {
   aiStatus: 'configured' | 'missing-key' | 'permission-needed';
   historicalScan?: HistoricalScanSummary;
   historicalUndoAvailable: boolean;
+  historicalApprovalPending?: boolean;
 }
 
 export interface ClassifiedResult {
@@ -336,5 +335,4 @@ export const emptyPersistedState = (): PersistedState => ({
   corrections: {},
   bookmarkMetadata: {},
   preferences: {},
-  pageProfiles: {},
 });

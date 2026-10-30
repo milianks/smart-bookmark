@@ -7,7 +7,7 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 ## Data flow and state
 
 - Use `sendMessage()` and the `RuntimeRequest` discriminated union in `types/messages.ts` for page-to-background operations. Unwrap errors through `unwrapResponse()` and show user-facing status text in the page.
-- Load the dashboard via `state:get` when a page mounts and refresh after a mutation. Keep only transient form state, busy state, selected review ID, and status/error messages in React state.
+- Load the dashboard via `state:get` when a page mounts and refresh after a mutation. Popup and Review subscribe to local state-key change notifications without reading the payload; coalesce notifications, remove listeners on cleanup, and ignore out-of-order responses. Keep only transient form state, busy state, selected review ID, and status/error messages in React state.
 - Do not access `chrome.storage.local` from UI components or mutate bookmarks directly from a page. Send a typed message and let the background validate current state.
 - Never return API key material in the dashboard payload. The UI receives only `hasApiKey`; replacement keys are write-only password inputs.
 
@@ -22,7 +22,7 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 
 - Settings are the second view inside the action popup. Switch views in React without opening a tab or Chrome window.
 - Chrome MV3 derives popup width from its rendered content: keep the popup main view and embedded settings view at the same fixed `390px` width in both loading and loaded states. Keep the options page's responsive `max-w-5xl` layout separate; do not set a global `html` or `body` width to size one popup view.
-- Persist editable settings drafts through typed background runtime messages; never read or write extension storage from UI components. Clear the draft after formal settings save succeeds.
+- Debounce editable settings drafts for 300 ms, serialize writes, and flush before saving, pagehide and component cleanup; use typed background runtime messages; never read or write extension storage from UI components. Clear the draft after formal settings save succeeds.
 
 ## Quality checks
 
@@ -35,6 +35,7 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 - Start historical scans, batch approval, and historical undo only through `RuntimeRequest` messages. The popup renders scan status/counts from `DashboardState`; it does not enumerate bookmarks or inspect storage.
 - Historical scan status `scanning` and `awaiting_review` disable the start control. Review pages may show per-item status and a guarded approve-all action; refresh dashboard state after every mutation.
 - The background may return `historicalReviews` for status display, but must omit scan internals (`coveredIds`, force flags), API keys, provider payloads, and raw errors.
+- Batch approval returns a queued count; show background progress via dashboard refresh. Disable duplicate batch approval and historical undo while `historicalApprovalPending` is true.
 - Batch actions must expose `role="status"` success text and `role="alert"` errors. Stale/manual-move outcomes remain visible as item status rather than disappearing silently.
 
 ## Manual bookmark metadata UI

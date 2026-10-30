@@ -38,7 +38,7 @@ describe('isSensitiveHost', () => {
 });
 
 describe('buildPageProfile', () => {
-  it('distills a non-verbatim profile', () => {
+  it('builds a bounded sampled profile', () => {
     const profile = buildPageProfile(page, 123);
     expect(profile.summary).toContain('Python agent');
     expect(profile.summary.length).toBeLessThanOrEqual(500);
@@ -47,6 +47,19 @@ describe('buildPageProfile', () => {
     expect(profile.charCount).toBe(page.text.trim().length);
     expect(profile.generatedAt).toBe(123);
     expect('text' in profile).toBe(false);
+  });
+
+  it('samples later body text even when a meta description exists, with a fixed output bound', () => {
+    const text = 'a'.repeat(800) + 'first-budget-marker' + 'b'.repeat(1800) + 'second-budget-marker' + 'c'.repeat(2800) + 'third-budget-marker';
+    const input = { ...page, description: 'Fixed meta description', text };
+    const profiles = [1000, 3000, 6000].map((limit) => buildPageProfile(input, 0, limit));
+    expect(new Set(profiles.map((profile) => profile.summary)).size).toBe(3);
+    expect(profiles[2]!.summary).toContain('third-budget-marker');
+    expect(profiles[0]!.summary).not.toContain('third-budget-marker');
+    for (const profile of profiles) {
+      expect(profile.summary).toContain('Fixed meta description');
+      expect(profile.summary.length).toBeLessThanOrEqual(500);
+    }
   });
 
   it('detects video content', () => {
@@ -72,6 +85,13 @@ describe('PageExtractorService', () => {
     expect(profile).toBeDefined();
     expect(profile?.contentType).toBe('repo');
     expect(profile?.generatedAt).toBe(42);
+  });
+
+  it('enforces the selected extraction budget even if the port returns extra text', async () => {
+    const service = new PageExtractorService({ port: port({ ...page, text: 'a'.repeat(1000) + 'outside-budget' }) });
+    const profile = await service.extractProfile(page.url, settings({ extractCharLimit: 1000 }), 'github.com');
+    expect(profile?.charCount).toBe(1000);
+    expect(profile?.summary).not.toContain('outside-budget');
   });
 
   it('skips sensitive hosts and disabled sites', async () => {
