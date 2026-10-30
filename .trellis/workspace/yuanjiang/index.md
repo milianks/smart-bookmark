@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 14
+- **Total Sessions**: 15
 - **Last Active**: 2026-10-30
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~367 | Active |
+| `journal-1.md` | ~389 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 15 | 2026-10-30 | 存储与面板性能优化及 v0.2.3 | `a588ef2` | `perf/storage-dashboard` |
 | 14 | 2026-10-30 | 单条与批量分类缓存互通 | `b9817e4` | `master` |
 | 13 | 2026-10-28 | 完成分类缓存失效优化并归档 | `8f95335` | `master` |
 | 12 | 2026-10-18 | 完成智能书签分类增强 | `efd96fd` | `feat/smart-bookmark-root` |

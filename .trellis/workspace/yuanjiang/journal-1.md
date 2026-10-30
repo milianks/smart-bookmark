@@ -365,3 +365,25 @@ Added account-named Chrome smart bookmark root with default folders and strict r
 ### Status
 
 [OK] **Completed**
+
+
+## Session 15: 存储与面板性能优化及 v0.2.3
+<!-- trellis-session: v=2 fp=772dcc23ea4ceb08 -->
+
+**Date**: 2026-10-30
+**Task**: 存储与面板性能优化及 v0.2.3
+**Branch**: `perf/storage-dashboard`
+
+### Summary
+
+完成存储缓存、外部失效与失败恢复、keep 写入合并、面板端口通知和视图裁剪、文件夹缓存。5000 条入队加15条处理基准：读取136→1、写入63→33、累计写入减少47.6%。独立检查、294项测试、typecheck、build、diff check通过；版本更新0.2.3，未推送，未验证Chrome实机。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a588ef2` | perf(storage): 降低状态读写与面板刷新开销并更新至 v0.2.3 |
+
+### Status
+
+[OK] **Completed**
