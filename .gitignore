@@ -13,7 +13,7 @@ node_modules/
 .omc/
 .omx/
 .claude
-
+.pi/
 
 # Test output
 coverage/
