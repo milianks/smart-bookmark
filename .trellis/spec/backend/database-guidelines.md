@@ -39,6 +39,6 @@ The single Chrome storage key is an explicit lower-case, dot-separated string (`
 
 ## Retention and I/O
 
-Keep the single atomic snapshot for pending move intents and related state. Coalesce concurrent reads only while in flight; return independent clones and read storage again on later calls. Skip writes when normalized state did not change. Do not keep a stale worker-wide state cache.
+Keep the single atomic snapshot for pending move intents and related state. With an injected storage-change subscription, reuse the last validated worker snapshot and invalidate it on external state-key changes. Without a subscription, coalesce only in-flight reads and read storage again on later calls. Always return independent clones; skip writes when normalized state did not change. See the storage/dashboard performance scenario in `extension-runtime-contract.md` for race and failure handling.
 
 Retain the latest 250 terminal reviews, protecting all pending/approving items, active scan items, pending-operation references and durable approval-queue IDs. Retain the latest 2,000 metadata records and clean up records on bookmark/folder deletion. Keep completed scan counters stable after pruning. Normalize URL corrections with `correctionUrl` (including fragment); drop legacy domain-only rules rather than guessing their page. The unused persisted `pageProfiles` map and `forceOrganize` settings are removed during normalization.

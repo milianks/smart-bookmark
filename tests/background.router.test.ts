@@ -81,6 +81,19 @@ function makeServices() {
 }
 
 describe('background runtime router', () => {
+  it('validates dashboard views and forwards them while preserving default requests', async () => {
+    const { services } = makeServices();
+    const get = vi.spyOn(services.organizer, 'getDashboardState');
+    for (const view of ['popup', 'settings', 'review'] as const) {
+      const request = RequestSchema.parse({ type: 'state:get', view });
+      await handleRequest(request, services);
+      expect(get).toHaveBeenLastCalledWith(view);
+    }
+    await handleRequest(RequestSchema.parse({ type: 'state:get' }), services);
+    expect(get).toHaveBeenLastCalledWith(undefined);
+    expect(RequestSchema.safeParse({ type: 'state:get', view: 'other' }).success).toBe(false);
+  });
+
   it('strictly rejects malformed and unknown-field requests', () => {
     const malformed: unknown[] = [
       {},

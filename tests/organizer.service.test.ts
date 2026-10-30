@@ -118,6 +118,58 @@ describe('OrganizerService', () => {
     settings = new SettingsService({ store, classifier, hasProviderPermission: async () => true, afterUpdate: () => organizer.resume() });
   });
 
+  it('trims dashboard views, caches folders, and refreshes after invalidation and root changes', async () => {
+    const folders = vi.spyOn(bookmarks, 'getFoldersWithinRoot');
+    await store.update((state) => {
+      state.reviews.history = {
+        id: 'history', bookmarkId: 'b1', title: 'History', url: 'https://example.com/langgraph',
+        sourceParentId: 'smart-root', classification: { action: 'keep', confidence: 1, reason: 'kept' },
+        source: 'ai', createdAt: 1, status: 'approved', scanId: 'scan',
+      };
+    });
+    const popup = await organizer.getDashboardState('popup');
+    expect(popup).not.toHaveProperty('folders');
+    expect(popup).not.toHaveProperty('historicalReviews');
+    expect(popup.settings).not.toHaveProperty('apiKey');
+    expect(Object.keys(await organizer.getDashboardState('settings')).sort()).toEqual(['activities', 'aiStatus', 'settings']);
+    expect(folders).not.toHaveBeenCalled();
+    const first = await organizer.getDashboardState();
+    expect(first.historicalReviews).toHaveLength(1);
+    first.folders[0]!.path = 'caller edit';
+    expect((await organizer.getDashboardState('review')).folders[0]!.path).not.toBe('caller edit');
+    expect(folders).toHaveBeenCalledTimes(1);
+    bookmarks.addFolder('new-folder', 'New folder', 'smart-root');
+    organizer.invalidateFolders();
+    expect((await organizer.getDashboardState()).folders.some((folder) => folder.id === 'new-folder')).toBe(true);
+    expect(folders).toHaveBeenCalledTimes(2);
+    await store.update((state) => { state.smartBookmarkRootId = 'dev'; });
+    expect((await organizer.getDashboardState()).folders.some((folder) => folder.id === 'new-folder')).toBe(false);
+    expect(folders).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not refill invalidated folders from an older in-flight read and retries read failures', async () => {
+    let finish!: (value: FolderSummary[]) => void;
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; });
+    const folders = vi.spyOn(bookmarks, 'getFoldersWithinRoot').mockImplementationOnce(async () => {
+      started();
+      return new Promise<FolderSummary[]>((resolve) => { finish = resolve; });
+    });
+    const old = organizer.getDashboardState();
+    await reading;
+    organizer.invalidateFolders();
+    const fresh = await organizer.getDashboardState();
+    finish([{ id: 'stale', name: 'Stale', path: 'Stale' }]);
+    await old;
+    expect((await organizer.getDashboardState()).folders).toEqual(fresh.folders);
+    expect(folders).toHaveBeenCalledTimes(2);
+    organizer.invalidateFolders();
+    folders.mockRejectedValueOnce(new Error('temporary bookmark failure'));
+    expect((await organizer.getDashboardState()).folders).toEqual([]);
+    expect((await organizer.getDashboardState()).folders.length).toBeGreaterThan(0);
+    expect(folders).toHaveBeenCalledTimes(4);
+  });
+
   it('projects persisted metadata only onto matching recent jobs and review items', async () => {
     const metadata = { summary: 'Saved summary', tags: ['docs'], generatedAt: 10 };
     await store.update((state) => {

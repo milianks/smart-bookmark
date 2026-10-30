@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { normalizeBaseUrl, originPermissionPattern } from '../lib/ai/provider-config';
-import type { DashboardState, ProviderProtocol, PublicSettings, SettingsDraft } from '../types/domain';
+import type { SettingsDashboardState, ProviderProtocol, PublicSettings, SettingsDraft } from '../types/domain';
 import { sendMessage, unwrapResponse } from '../types/messages';
 import { createSettingsDraftWriter } from './settings-draft-writer';
 import { RecentActivity } from './RecentActivity';
@@ -26,7 +26,7 @@ export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
   const [form, setForm] = useState<FormSettings | null>(null);
   const [hasApiKey, setHasApiKey] = useState(false);
   const [apiKey, setApiKey] = useState('');
-  const [state, setState] = useState<DashboardState | null>(null);
+  const [state, setState] = useState<SettingsDashboardState | null>(null);
   const [connectionTested, setConnectionTested] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
@@ -38,8 +38,8 @@ export function SettingsApp({ embedded = false, onBack }: SettingsAppProps) {
   const savedForm = useRef<FormSettings | null>(null);
 
   const refresh = useCallback(async () => {
-    const response = await sendMessage({ type: 'state:get' });
-    const dashboard = unwrapResponse<DashboardState>(response);
+    const response = await sendMessage({ type: 'state:get', view: 'settings' });
+    const dashboard = unwrapResponse<SettingsDashboardState>(response);
     const { hasApiKey: configured, ...settings } = dashboard.settings;
     const draftResponse = await sendMessage({ type: 'settings-draft:get' });
     const draft = unwrapResponse<{ draft: SettingsDraft | null }>(draftResponse).draft;

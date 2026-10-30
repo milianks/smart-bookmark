@@ -9,7 +9,7 @@ export default defineConfig({
   manifest: {
     name: 'AI Bookmark Manager',
     description: '在你收藏网页后，安全地帮助你整理书签。',
-    version: '0.2.2',
+    version: '0.2.3',
     minimum_chrome_version: '134',
     permissions: ['bookmarks', 'storage', 'notifications', 'alarms', 'scripting'],
     optional_host_permissions: [

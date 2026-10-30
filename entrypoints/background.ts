@@ -1,6 +1,7 @@
 import { defineBackground } from '#imports';
 import { originPermissionPattern, normalizeBaseUrl } from '../lib/ai/provider-config';
 import { RequestSchema, handleRequest } from './background/router';
+import { registerDashboardNotifications } from './background/dashboard';
 import { OpenAICompatibleProvider } from '../lib/ai/openai-compatible';
 import { ChromeStateRepository } from '../lib/storage/repository';
 import { ChromeBookmarkService } from '../services/bookmark.service';
@@ -13,7 +14,8 @@ import { SettingsService } from '../services/settings.service';
 import { PageExtractorService } from '../services/page-extractor.service';
 import { ChromePageExtractionPort } from '../services/page-extractor.chrome';
 export default defineBackground(() => {
-  const store = new ChromeStateRepository();
+  const store = new ChromeStateRepository(chrome.storage.local, chrome.storage.onChanged);
+  const notifyDashboard = registerDashboardNotifications(chrome.runtime, chrome.storage);
   const bookmarks = new ChromeBookmarkService();
   const provider = new OpenAICompatibleProvider();
   const metadata = new BookmarkMetadataService({
@@ -102,17 +104,28 @@ export default defineBackground(() => {
       });
   };
 
+  const invalidateFolders = () => {
+    organizer.invalidateFolders();
+    notifyDashboard();
+  };
+  chrome.bookmarks.onChanged.addListener(invalidateFolders);
+  chrome.bookmarks.onMoved.addListener(invalidateFolders);
+  chrome.bookmarks.onChildrenReordered.addListener(invalidateFolders);
+
   // MV3 event listeners must be registered synchronously at worker evaluation time.
   chrome.bookmarks.onCreated.addListener((id, node) => {
+    invalidateFolders();
     void organizer.onBookmarkCreated(id, node).catch((error: unknown) => reportBackgroundError(error));
   });
   chrome.bookmarks.onRemoved.addListener((_id, info) => {
+    invalidateFolders();
     void organizer.onBookmarkRemoved(info.node).catch((error: unknown) => reportBackgroundError(error));
   });
   chrome.bookmarks.onImportBegan.addListener(() => {
     void organizer.onImportBegan().catch((error: unknown) => reportBackgroundError(error));
   });
   chrome.bookmarks.onImportEnded.addListener(() => {
+    invalidateFolders();
     void organizer.onImportEnded().catch((error: unknown) => reportBackgroundError(error));
   });
   chrome.runtime.onStartup.addListener(() => {

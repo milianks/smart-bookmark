@@ -17,7 +17,7 @@ There is no global React store, context-based state layer, router state library,
 
 ## When to Use Global State
 
-No global state mechanism is present. Do not add a global store just to share dashboard data between pages; each extension page requests its current `DashboardState` from the background with `{ type: 'state:get' }`. Keep ephemeral state in the component that owns the interaction.
+No global state mechanism is present. Do not add a global store just to share dashboard data between pages; each extension page requests its dashboard projection from the background with `{ type: 'state:get', view: 'popup' | 'review' | 'settings' }`. Keep ephemeral state in the component that owns the interaction.
 
 ## Server State
 
@@ -32,3 +32,10 @@ The dashboard intentionally exposes `PublicSettings` with `hasApiKey`, not the k
 - Do not promote transient busy/error/selection state into persistent storage.
 - Do not read or write Chrome storage or bookmarks from the page; the background worker owns these operations.
 - Do not include API key material in dashboard state, status text, notifications, or activity history.
+
+## Dashboard projections and subscriptions
+
+- `PopupDashboardState` omits `historicalReviews` and `folders`; `SettingsDashboardState` contains only `settings`, `activities`, and `aiStatus`. Review and requests without `view` retain `DashboardState` for compatibility.
+- Popup and Review use `subscribeDashboard` to connect the `dashboard` runtime port. The only invalidation payload is `{ type: 'state:changed' }`; no persisted snapshot crosses this notification channel.
+- Settings retains mount/action-driven refreshes. Subscribed pages refresh after connection and reconnect after worker disconnect. Coalesce notifications while a refresh runs; cleanup cancels timers and disconnects the port. Keep `createLatestRefresh` protection against stale response application.
+- Verify coalescing, disconnect/reconnect, errors, cleanup, and projection consumers in Node tests. Browser service-worker lifecycle and Chrome event-delivery costs require separate real-browser validation.

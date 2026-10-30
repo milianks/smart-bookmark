@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-30
+
+### Changed
+
+- 缓存已校验的存储快照，外部写入时失效，减少重复读取；合并保持原位分类的连续写入，保留失败恢复与移动前落盘顺序。
+- Popup 与 Review 改用轻量端口通知并支持断线重连；面板按页面裁剪返回字段，复用文件夹列表并随书签变化失效。
+- 新增 5000 条书签入队及单批处理基准，验证存储开销、状态体积与面板读树次数。
+
 ## [0.2.2] - 2026-10-30
 
 ### Changed
@@ -79,7 +87,8 @@
 
 - 待确认视图嵌入 Popup，统一宽度与排版，修复布局跳动。
 
-[Unreleased]: https://github.com/milianks/smart-bookmark/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/milianks/smart-bookmark/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/milianks/smart-bookmark/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/milianks/smart-bookmark/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/milianks/smart-bookmark/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/milianks/smart-bookmark/releases/tag/v0.2.0

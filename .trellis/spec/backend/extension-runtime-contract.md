@@ -38,7 +38,7 @@ Use this contract when changing the MV3 background, bookmark or folder services,
 - Persist a pending move intent before calling `chrome.bookmarks.move`; re-read the bookmark and validate its source and destination immediately before mutation. Never delete a bookmark or folder.
 - If `chrome.bookmarks.move` rejects, reconcile the persisted intent immediately against the bookmark's live parent. Treat the move as committed if the target parent is observed; clear the intent and fail safely if the source remains; mark the operation stale/skipped if the bookmark is elsewhere.
 - The background initializes one folder named `智能书签` under the editable `bookmarks-bar` root, stores its ID in local state, and creates default first-level folders once. Existing persisted root IDs and names are preserved; no identity API or email permission is used.
-- Classification destinations, metadata and historical scans are limited to the persisted smart root. New bookmarks in built-in roots participate only when `organizeExternalRoots` is enabled. Boundary and path queries read live ancestor chains, including managed ancestors; classification context validation still uses a fresh tree before committing results. No long-lived tree cache is used.
+- Classification destinations, metadata and historical scans are limited to the persisted smart root. New bookmarks in built-in roots participate only when `organizeExternalRoots` is enabled. Boundary and path queries read live ancestor chains, including managed ancestors; classification context validation still uses a fresh tree before committing results. Classification and mutation checks never use the dashboard folder cache.
 - Drop legacy `forceOrganize` settings and unused persisted `pageProfiles` during normalization; retain other valid draft settings.
 - Automatic moves require automatic mode and confidence at or above the configured threshold. Folder creation always waits for explicit review approval. Review approval must be idempotent and revalidate live bookmark/folder state.
 
@@ -386,3 +386,55 @@ await store.update((state) => {
 ```
 
 This persists only bounded validated metadata for the requested bookmark and leaves all bookmark/folder state untouched.
+
+
+## Scenario: Storage and dashboard performance
+
+### 1. Scope / Trigger
+
+Use when changing repository snapshot caching, dashboard views, notifications, or folder-list reuse. Preserve the single-key atomic snapshot and durable move intent ordering.
+
+### 2. Signatures
+
+- `new ChromeStateRepository(storage, changes?)`: optional `StorageChanges` subscribes to state-key events.
+- `OrganizerService.getDashboardState(view?)`: `popup`, `settings`, `review`, or omitted.
+- `OrganizerService.invalidateFolders(): void`.
+- `registerDashboardNotifications(runtime, storage): () => void`: returns a notification scheduler.
+
+### 3. Contracts
+
+- Keep `ai-bookmark-manager.state.v1` and version 1. Internal write tokens live in settings and are removed by settings normalization, including old-version whitelists. Preserve the separate classification credential epoch.
+- Cache validated snapshots only with an injected change subscription. External writes invalidate; reads interrupted by a change retry before installing a snapshot. Without a subscription, later calls read storage again.
+- Return independent clones. Mutate a private copy, normalize, compare its serialized value, and await each changed snapshot's `storage.set`. No deferred persistence; pending move intents must reach storage before bookmark mutation.
+- Public `popup` responses omit `historicalReviews` and `folders`; `settings` returns only public settings, activities, and AI status. `review` and omitted views retain the complete existing dashboard contract. Unknown view values fail strict request validation.
+- Only the worker listens to storage changes. Popup and Review connect a `dashboard` port and receive `{ type: 'state:changed' }` after coalescing. Storage changes, including external writes, and bookmark-tree invalidations schedule notification.
+- Cache dashboard folder queries by root ID; invalidate on bookmark create/remove/change/move/reorder/import-end. Never use this cache for classification or mutation safety checks. Failed queries are not permanently cached.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required behavior |
+|---|---|
+| Mutator throws or storage write fails | Reject, discard cache, preserve durable state; subsequent queued updates can run |
+| External state write or removal | Invalidate cached state; next load observes normalized storage |
+| External change while reading or writing | Do not install a stale snapshot over invalidation |
+| No storage subscription | Fall back to fresh reads, including direct-write test adapters |
+| Dashboard port disconnects | Page reconnects and refreshes; cleanup stops retries |
+| Folder tree changes or smart root changes | Next dashboard folder request queries the current root; stale in-flight results cannot replace the new cache |
+
+### 5. Good / Base / Bad Cases
+
+- Good: repeated dashboard requests reuse a validated snapshot and one folder query until an event invalidates them.
+- Base: a legacy snapshot without internal markers still loads with existing normalization and classification-cache safety.
+- Bad: returning cached objects directly lets callers mutate durable state outside `update`; cloning remains mandatory.
+
+### 6. Tests Required
+
+- Repository: repeated reads, clone isolation, external writes, event/read/write races, serialized updates, mutator failure, storage failure, and old-format round trips.
+- Dashboard: strict view routing, omitted-view compatibility, public-field projections, folder invalidation/root changes/failure recovery, constant notification payload, reconnect and cleanup.
+- `tests/perf/state-scale.test.ts`: 5000-bookmark queue, batch updates and repeated dashboard reads; assert deterministic I/O/size limits and snapshot peak below 5 MB. Wall-clock timings are diagnostic only. Record before/after measurements in the task validation artifact.
+- Node checks do not establish real Chrome service-worker lifecycle behavior or prove eliminated browser-internal storage-event serialization.
+
+### 7. Wrong vs Correct
+
+- Wrong: cache storage without invalidation, merge writes across a bookmark move, or send the persisted state over a dashboard port.
+- Correct: invalidate on external events, persist every safety-critical update before mutation, and send only a fixed-size invalidation before a view-specific request.

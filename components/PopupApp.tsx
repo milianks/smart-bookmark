@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import type { DashboardState } from '../types/domain';
+import type { PopupDashboardState } from '../types/domain';
 import { sendMessage, unwrapResponse } from '../types/messages';
 import { createLatestRefresh, subscribeDashboard } from './dashboard-subscription';
 import { BookmarkCard } from './BookmarkCard';
@@ -16,7 +16,7 @@ import { Stat } from './ui/stat';
 import { Switch } from './ui/switch';
 
 export function PopupApp() {
-  const [state, setState] = useState<DashboardState | null>(null);
+  const [state, setState] = useState<PopupDashboardState | null>(null);
   const [view, setView] = useState<'main' | 'settings' | 'review'>('main');
   const [reviewScanId, setReviewScanId] = useState('');
   const [error, setError] = useState('');
@@ -26,7 +26,7 @@ export function PopupApp() {
   const [notice, setNotice] = useState('');
 
   const [refresh] = useState(() => createLatestRefresh(
-    async () => unwrapResponse<DashboardState>(await sendMessage({ type: 'state:get' })),
+    async () => unwrapResponse<PopupDashboardState>(await sendMessage({ type: 'state:get', view: 'popup' })),
     (dashboard) => { setState(dashboard); setError(''); },
     (reason) => setError(reason instanceof Error ? reason.message : '无法读取扩展状态。'),
   ));
@@ -267,6 +267,6 @@ export function PopupApp() {
   </main>;
 }
 
-function historicalStatusLabel(status: NonNullable<DashboardState['historicalScan']>['status']): string {
+function historicalStatusLabel(status: NonNullable<PopupDashboardState['historicalScan']>['status']): string {
   return { idle: '未开始', scanning: '扫描中', awaiting_review: '等待确认', completed: '已完成', failed: '失败' }[status];
 }

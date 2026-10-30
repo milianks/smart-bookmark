@@ -12,6 +12,10 @@ import type {
   BookmarkSnapshot,
   ClassifiedResult,
   DashboardState,
+  DashboardView,
+  DashboardResponse,
+  PopupDashboardState,
+  SettingsDashboardState,
   FolderSummary,
   PageProfile,
   PendingOperation,
@@ -62,6 +66,22 @@ interface PreparedJob {
 export class OrganizerService {
   private readonly inFlight = new Set<string>();
   private activeClassifications = 0;
+  private dashboardFolders?: { rootId: string; promise: Promise<FolderSummary[]> };
+
+  invalidateFolders(): void {
+    this.dashboardFolders = undefined;
+  }
+
+  private getDashboardFolders(rootId: string): Promise<FolderSummary[]> {
+    if (this.dashboardFolders?.rootId === rootId) return this.dashboardFolders.promise;
+    const entry = { rootId, promise: Promise.resolve([] as FolderSummary[]) };
+    entry.promise = this.getFoldersWithinSmartRoot(rootId).then((folders) => {
+      if (folders === null && this.dashboardFolders === entry) this.dashboardFolders = undefined;
+      return folders ?? [];
+    });
+    this.dashboardFolders = entry;
+    return entry.promise;
+  }
   private mutationChain: Promise<void> = Promise.resolve();
   private readonly now: () => number;
   private readonly makeId: (prefix: string) => string;
@@ -280,7 +300,11 @@ export class OrganizerService {
     }
   }
 
-  async getDashboardState(): Promise<DashboardState> {
+  getDashboardState(view?: 'review'): Promise<DashboardState>;
+  getDashboardState(view: 'popup'): Promise<PopupDashboardState>;
+  getDashboardState(view: 'settings'): Promise<SettingsDashboardState>;
+  getDashboardState(view: DashboardView | undefined): Promise<DashboardResponse>;
+  async getDashboardState(view?: DashboardView): Promise<DashboardResponse> {
     const state = await this.deps.store.load();
     const configured = Boolean(state.settings.apiKey.trim());
     let permission = false;
@@ -292,32 +316,38 @@ export class OrganizerService {
       }
     }
     const { apiKey: _apiKey, ...settings } = state.settings;
-    const folderOptions = state.smartBookmarkRootId
-      ? ((await this.getFoldersWithinSmartRoot(state.smartBookmarkRootId)) ?? [])
-        .filter((folder) => folder.unmodifiable !== 'managed')
-        .map((folder) => ({ id: folder.id, path: folder.path }))
-      : [];
-    return {
+    const common: SettingsDashboardState = {
       settings: { ...settings, hasApiKey: configured },
-      pendingReviews: Object.values(state.reviews)
-        .filter((item) => item.status === 'pending' || item.status === 'approving')
-        .map((item) => ({ ...item, ...(state.bookmarkMetadata[item.bookmarkId] ? { metadata: state.bookmarkMetadata[item.bookmarkId] } : {}) }))
-        .sort((a, b) => b.createdAt - a.createdAt),
+      activities: state.activities.slice(-20).reverse(),
+      aiStatus: configured ? (permission ? 'configured' : 'permission-needed') : 'missing-key',
+    };
+    if (view === 'settings') return common;
+    const reviewFields = view === 'popup' ? {} : {
+      folders: state.smartBookmarkRootId
+        ? (await this.getDashboardFolders(state.smartBookmarkRootId))
+          .filter((folder) => folder.unmodifiable !== 'managed')
+          .map((folder) => ({ id: folder.id, path: folder.path }))
+        : [],
       historicalReviews: Object.values(state.reviews)
         .filter((item) => Boolean(item.scanId))
+        .map((item) => ({ ...item, ...(state.bookmarkMetadata[item.bookmarkId] ? { metadata: state.bookmarkMetadata[item.bookmarkId] } : {}) }))
+        .sort((a, b) => b.createdAt - a.createdAt),
+    };
+    return {
+      ...common,
+      ...reviewFields,
+      pendingReviews: Object.values(state.reviews)
+        .filter((item) => item.status === 'pending' || item.status === 'approving')
         .map((item) => ({ ...item, ...(state.bookmarkMetadata[item.bookmarkId] ? { metadata: state.bookmarkMetadata[item.bookmarkId] } : {}) }))
         .sort((a, b) => b.createdAt - a.createdAt),
       recentJobs: Object.values(state.jobs)
         .map((job) => ({ ...job, ...(state.bookmarkMetadata[job.bookmark.id] ? { metadata: state.bookmarkMetadata[job.bookmark.id] } : {}) }))
         .sort((a, b) => b.updatedAt - a.updatedAt)
         .slice(0, 8),
-      activities: state.activities.slice(-20).reverse(),
       awaitingConfigurationCount: Object.values(state.jobs).filter((job) => job.status === 'awaiting_configuration').length,
       awaitingPermissionCount: Object.values(state.jobs).filter((job) => job.status === 'awaiting_permission').length,
       ...(state.lastUndo ? { lastUndo: state.lastUndo } : {}),
       undoStackCount: state.undoStack.length,
-      folders: folderOptions,
-      aiStatus: configured ? (permission ? 'configured' : 'permission-needed') : 'missing-key',
       ...(state.historicalScan ? {
         historicalScan: historicalScanSummary(state.historicalScan, Boolean(state.lastHistoricalUndo?.moved.length)),
       } : {}),
@@ -918,7 +948,10 @@ export class OrganizerService {
       await this.failJob(id, '分类建议中的文件夹已不存在，书签保持原位。', false, settings);
       return;
     }
-    await this.updateJob(id, (current) => {
+    const result = classified.result;
+    await this.deps.store.update((state) => {
+      const current = state.jobs[id];
+      if (!current) return;
       assertCacheVariantCurrent(classified);
       for (const outcome of batchOutcomes ?? []) {
         if ('result' in outcome) assertCacheVariantCurrent(outcome.result);
@@ -926,17 +959,15 @@ export class OrganizerService {
       current.classification = classified.result;
       current.classificationSource = classified.source;
       current.updatedAt = this.now();
+      if (result.action === 'keep') {
+        current.status = 'completed';
+        appendActivity(state, {
+          kind: 'kept', bookmarkId: id, title: job.bookmark.title, url: job.bookmark.url,
+          message: result.reason, source: classified.source,
+        }, this.now(), this.makeId);
+      }
     });
-
-    const result = classified.result;
-    if (result.action === 'keep') {
-      await this.updateJob(id, (current) => { current.status = 'completed'; });
-      await this.appendActivity({
-        kind: 'kept', bookmarkId: id, title: job.bookmark.title, url: job.bookmark.url,
-        message: result.reason, source: classified.source,
-      });
-      return;
-    }
+    if (result.action === 'keep') return;
     if (job.scanId) {
       await this.createReview(job, result, classified.source, folders, settings);
       return;

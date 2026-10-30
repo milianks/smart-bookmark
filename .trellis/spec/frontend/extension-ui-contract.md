@@ -7,7 +7,7 @@ This project has three React extension pages: the action popup (`entrypoints/pop
 ## Data flow and state
 
 - Use `sendMessage()` and the `RuntimeRequest` discriminated union in `types/messages.ts` for page-to-background operations. Unwrap errors through `unwrapResponse()` and show user-facing status text in the page.
-- Load the dashboard via `state:get` when a page mounts and refresh after a mutation. Popup and Review subscribe to local state-key change notifications without reading the payload; coalesce notifications, remove listeners on cleanup, and ignore out-of-order responses. Keep only transient form state, busy state, selected review ID, and status/error messages in React state.
+- Load the dashboard via `state:get` when a page mounts and refresh after a mutation. Pages select their `state:get` view. Popup and Review subscribe through the `dashboard` runtime port to `{ type: 'state:changed' }`; coalesce notifications, reconnect after disconnect, remove listeners on cleanup, and ignore out-of-order responses. Settings retains mount/action-driven refreshes. Pages must not subscribe to storage change payloads. Keep only transient form state, busy state, selected review ID, and status/error messages in React state.
 - Do not access `chrome.storage.local` from UI components or mutate bookmarks directly from a page. Send a typed message and let the background validate current state.
 - Never return API key material in the dashboard payload. The UI receives only `hasApiKey`; replacement keys are write-only password inputs.
 

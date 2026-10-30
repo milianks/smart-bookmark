@@ -1,12 +1,121 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ChromeStateRepository, normalizeCache, type LocalStorageArea } from '../lib/storage/repository';
+import { ChromeStateRepository, normalizeCache, type LocalStorageArea, type StorageChanges } from '../lib/storage/repository';
 import { CACHE_ENTRY_MAX_BYTES, DEFAULT_SETTINGS, SettingsSchema, emptyPersistedState, type CacheEntry, type PersistedState } from '../types/domain';
 import { ClassificationService, PermissionRequiredError } from '../services/classifier.service';
 import { OpenAICompatibleProvider } from '../lib/ai/openai-compatible';
 
 const STORAGE_KEY = 'ai-bookmark-manager.state.v1';
 
+function subscribedRepository() {
+  const values: Record<string, unknown> = { [STORAGE_KEY]: emptyPersistedState() };
+  let listener: Parameters<StorageChanges['addListener']>[0] = () => {};
+  const emit = (newValue: unknown) => listener({ [STORAGE_KEY]: { newValue } }, 'local');
+  const storage = {
+    get: vi.fn(async (key: string) => structuredClone({ [key]: values[key] })),
+    set: vi.fn(async (items: Record<string, unknown>) => {
+      Object.assign(values, structuredClone(items));
+      emit(items[STORAGE_KEY]);
+    }),
+  };
+  const repository = new ChromeStateRepository(storage, { addListener: (next) => { listener = next; } });
+  return { repository, storage, values, emit };
+}
+
 describe('ChromeStateRepository', () => {
+  it('reuses validated reads, isolates callers, and observes external writes including copied markers', async () => {
+    const { repository, storage, values } = subscribedRepository();
+    const first = await repository.load();
+    first.settings.model = 'caller edit';
+    expect((await repository.load()).settings.model).toBe(DEFAULT_SETTINGS.model);
+    expect(storage.get).toHaveBeenCalledTimes(1);
+    await repository.update((state) => { state.settings.model = 'own write'; });
+    expect((await repository.load()).settings.model).toBe('own write');
+    expect(storage.get).toHaveBeenCalledTimes(1);
+    // An external context may preserve our internal marker when editing the snapshot.
+    const external = structuredClone(values[STORAGE_KEY]) as PersistedState;
+    external.settings.model = 'external write';
+    await storage.set({ [STORAGE_KEY]: external });
+    expect((await repository.load()).settings.model).toBe('external write');
+    expect(storage.get).toHaveBeenCalledTimes(2);
+    delete values[STORAGE_KEY];
+    await storage.set({ [STORAGE_KEY]: undefined });
+    expect((await repository.load()).settings.model).toBe(DEFAULT_SETTINGS.model);
+  });
+
+  it('serializes cached updates and recovers after mutator and storage failures', async () => {
+    const { repository, storage } = subscribedRepository();
+    await Promise.all([
+      repository.update((state) => { state.settings.model = 'saved'; }),
+      repository.update((state) => { state.settings.enabled = false; }),
+    ]);
+    let retained: PersistedState | undefined;
+    await repository.update((state) => { retained = state; state.settings.successNotifications = true; });
+    retained!.settings.model = 'late mutator edit';
+    await expect(repository.update((state) => {
+      state.settings.model = 'failed mutation';
+      throw new Error('mutator failed');
+    })).rejects.toThrow('mutator failed');
+    expect((await repository.load()).settings).toMatchObject({ model: 'saved', enabled: false, successNotifications: true });
+    storage.set.mockRejectedValueOnce(new Error('quota exceeded'));
+    await expect(repository.update((state) => { state.settings.model = 'failed write'; })).rejects.toThrow('quota exceeded');
+    expect((await repository.load()).settings.model).toBe('saved');
+    await repository.update((state) => { state.settings.model = 'recovered'; });
+    expect((await repository.load()).settings.model).toBe('recovered');
+  });
+
+  it('does not cache a read overtaken by an external change', async () => {
+    const { repository, storage, values, emit } = subscribedRepository();
+    let release!: (record: Record<string, unknown>) => void;
+    const old = structuredClone(values);
+    storage.get.mockImplementationOnce(async () => new Promise((resolve) => { release = resolve; }));
+    const loading = repository.load();
+    await Promise.resolve();
+    (values[STORAGE_KEY] as PersistedState).settings.model = 'new value';
+    emit(values[STORAGE_KEY]);
+    release(old);
+    expect((await loading).settings.model).toBe('new value');
+    expect((await repository.load()).settings.model).toBe('new value');
+    expect(storage.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not refill the cache when another write overtakes a pending set', async () => {
+    const { repository, storage, values, emit } = subscribedRepository();
+    let finish!: () => void;
+    let started!: () => void;
+    const writing = new Promise<void>((resolve) => { started = resolve; });
+    storage.set.mockImplementationOnce(async (items) => {
+      Object.assign(values, structuredClone(items));
+      emit(items[STORAGE_KEY]);
+      started();
+      await new Promise<void>((resolve) => { finish = resolve; });
+    });
+    const update = repository.update((state) => { state.settings.model = 'own'; });
+    await writing;
+    const external = structuredClone(values[STORAGE_KEY]) as PersistedState;
+    external.settings.model = 'external';
+    await storage.set({ [STORAGE_KEY]: external });
+    finish();
+    await update;
+    expect((await repository.load()).settings.model).toBe('external');
+  });
+
+  it('reads and writes legacy snapshots without changing durable bookmark state', async () => {
+    const { repository, storage, values } = subscribedRepository();
+    const legacy = emptyPersistedState();
+    legacy.smartBookmarkRootId = 'root';
+    legacy.smartBookmarkInitialized = true;
+    legacy.settings.model = 'legacy model';
+    legacy.jobs.bookmark = { bookmark: { id: 'bookmark', title: 'Saved', url: 'https://example.test', parentId: 'root' }, status: 'queued', attempts: 0, createdAt: 1, updatedAt: 1 };
+    await storage.set({ [STORAGE_KEY]: legacy });
+    await repository.update((state) => { state.settings.enabled = false; });
+    // Older readers whitelist settings and ignore the added internal write token.
+    const stored = structuredClone(values[STORAGE_KEY]) as PersistedState;
+    const settings = Object.fromEntries(Object.keys(DEFAULT_SETTINGS).map((key) => [key, stored.settings[key as keyof typeof DEFAULT_SETTINGS]]));
+    expect(SettingsSchema.parse(settings)).toEqual({ ...legacy.settings, enabled: false });
+    expect(stored.jobs).toEqual(legacy.jobs);
+    expect((await new ChromeStateRepository(storage).load()).jobs).toEqual(legacy.jobs);
+  });
+
   it('coalesces simultaneous reads without sharing mutable state or retaining stale reads', async () => {
     const values: Record<string, unknown> = { [STORAGE_KEY]: emptyPersistedState() };
     const storage: LocalStorageArea = {

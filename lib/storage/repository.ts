@@ -11,7 +11,7 @@ import {
   type PersistedState,
   type UndoRecord,
 } from '../../types/domain';
-import { correctionUrl, hostnameKey } from '../utils/ids';
+import { correctionUrl, hostnameKey, createId } from '../utils/ids';
 
 const STORAGE_KEY = 'ai-bookmark-manager.state.v1';
 // Legacy repository writes rebuild settings from a whitelist, dropping this marker.
@@ -27,52 +27,99 @@ export interface LocalStorageArea {
   set(items: Record<string, unknown>): Promise<void>;
 }
 
+export interface StorageChanges {
+  addListener(listener: (changes: Record<string, chrome.storage.StorageChange>, area: string) => void): void;
+}
+
+interface StateSnapshot {
+  state: PersistedState;
+  serialized: string;
+}
+
 export class ChromeStateRepository implements StateRepository {
   private writeChain: Promise<void> = Promise.resolve();
-  private reading?: Promise<PersistedState>;
+  private reading?: Promise<StateSnapshot>;
+  private cached?: StateSnapshot;
+  private revision = 0;
+  private readonly pendingWrites = new Set<string>();
 
-  constructor(private readonly storage: LocalStorageArea = chrome.storage.local) {}
+  constructor(
+    private readonly storage: LocalStorageArea = chrome.storage.local,
+    private readonly changes?: StorageChanges,
+  ) {
+    changes?.addListener((events, area) => {
+      if (area !== 'local' || !Object.prototype.hasOwnProperty.call(events, STORAGE_KEY)) return;
+      const token = events[STORAGE_KEY]?.newValue?.settings?._repositoryWriteToken;
+      if (typeof token === 'string' && this.pendingWrites.delete(token)) return;
+      this.revision += 1;
+      this.cached = undefined;
+    });
+  }
 
   async load(): Promise<PersistedState> {
     await this.writeChain;
-    return this.readNow();
+    return structuredClone((await this.readNow()).state);
   }
 
   update(mutator: (state: PersistedState) => void): Promise<PersistedState> {
     const operation = this.writeChain.then(async () => {
-      const state = await this.readNow();
-      const before = JSON.stringify(state);
-      mutator(state);
-      const validated = normalizeState(state);
-      if (JSON.stringify(validated) === before) return structuredClone(validated);
-      await this.storage.set({ [STORAGE_KEY]: {
-        ...validated,
-        settings: { ...validated.settings, [CACHE_SETTINGS_EPOCH]: validated.credentialGeneration },
-      } });
-      return structuredClone(validated);
+      const writeToken = createId('write');
+      try {
+        const before = await this.readNow();
+        const state = structuredClone(before.state);
+        mutator(state);
+        const validated = normalizeState(state);
+        const serialized = JSON.stringify(validated);
+        if (serialized === before.serialized) return structuredClone(validated);
+        const revision = this.revision;
+        if (this.changes) this.pendingWrites.add(writeToken);
+        await this.storage.set({ [STORAGE_KEY]: {
+          ...validated,
+          settings: {
+            ...validated.settings,
+            [CACHE_SETTINGS_EPOCH]: validated.credentialGeneration,
+            ...(this.changes ? { _repositoryWriteToken: writeToken } : {}),
+          },
+        } });
+        if (this.changes && revision === this.revision) {
+          this.cached = { state: structuredClone(validated), serialized };
+        }
+        return structuredClone(validated);
+      } catch (error) {
+        this.pendingWrites.delete(writeToken);
+        this.cached = undefined;
+        throw error;
+      }
     });
     this.writeChain = operation.then(() => undefined, () => undefined);
     return operation;
   }
 
-  private async readNow(): Promise<PersistedState> {
-    // Share only in-flight reads; later calls must observe external writes and legacy cache epochs.
+  private async readNow(): Promise<StateSnapshot> {
+    if (this.cached) return this.cached;
     this.reading ??= this.readStored().finally(() => { this.reading = undefined; });
-    return structuredClone(await this.reading);
+    return this.reading;
   }
 
-  private async readStored(): Promise<PersistedState> {
-    const record = await this.storage.get(STORAGE_KEY);
+  private async readStored(): Promise<StateSnapshot> {
+    // A change during get() must not install an older snapshot in the worker cache.
+    let revision: number;
+    let record: Record<string, unknown>;
+    do {
+      revision = this.revision;
+      record = await this.storage.get(STORAGE_KEY);
+    } while (this.changes && revision !== this.revision);
     const stored = record[STORAGE_KEY];
-    if (!stored || typeof stored !== 'object') return emptyPersistedState();
-    const input = stored as Partial<PersistedState>;
+    const input = stored && typeof stored === 'object' ? stored as Partial<PersistedState> : {};
     const settings = input.settings;
     const hasCacheEpoch = Boolean(settings && typeof settings === 'object' && !Array.isArray(settings)
       && Object.prototype.hasOwnProperty.call(settings, CACHE_SETTINGS_EPOCH)
       && (settings as unknown as Record<string, unknown>)[CACHE_SETTINGS_EPOCH] === input.credentialGeneration);
     const state = normalizeState(input);
     if (!hasCacheEpoch) state.cache = {};
-    return state;
+    const snapshot = { state: structuredClone(state), serialized: JSON.stringify(state) };
+    if (this.changes) this.cached = snapshot;
+    return snapshot;
   }
 }
 

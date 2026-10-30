@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Storage, crash-consistency (pendingOperation), live mutation and storage bound contracts that must be preserved"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "Persisted state shape, normalization and bounds"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Dashboard subscription and state:get consumption in UI"}

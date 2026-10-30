@@ -314,6 +314,11 @@ export interface DashboardState {
   historicalApprovalPending?: boolean;
 }
 
+export type DashboardView = 'popup' | 'review' | 'settings';
+export type PopupDashboardState = Omit<DashboardState, 'historicalReviews' | 'folders'>;
+export type SettingsDashboardState = Pick<DashboardState, 'settings' | 'activities' | 'aiStatus'>;
+export type DashboardResponse = DashboardState | PopupDashboardState | SettingsDashboardState;
+
 export interface ClassifiedResult {
   result: ClassificationResult;
   source: ClassificationSource;

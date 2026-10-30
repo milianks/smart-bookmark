@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { ProviderProtocolSchema, SettingsDraftSchema } from '../../types/domain';
-import type { DashboardState, Settings, SettingsDraft } from '../../types/domain';
+import type { DashboardResponse, DashboardView, Settings, SettingsDraft } from '../../types/domain';
 import type { RuntimeRequest } from '../../types/messages';
 
 const SettingsPatchSchema = z.object({
@@ -20,7 +20,7 @@ const SettingsPatchSchema = z.object({
 }).strict();
 
 export const RequestSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('state:get') }).strict(),
+  z.object({ type: z.literal('state:get'), view: z.enum(['popup', 'review', 'settings']).optional() }).strict(),
   z.object({ type: z.literal('settings:update'), settings: SettingsPatchSchema }).strict(),
   z.object({ type: z.literal('provider:test') }).strict(),
   z.object({ type: z.literal('settings-draft:get') }).strict(),
@@ -37,7 +37,7 @@ export const RequestSchema = z.discriminatedUnion('type', [
 ]);
 
 export interface OrganizerFacade {
-  getDashboardState(): Promise<DashboardState>;
+  getDashboardState(view?: DashboardView): Promise<DashboardResponse>;
   approveReview(id: string, overrideFolderId?: string): Promise<void>;
   rejectReview(id: string): Promise<void>;
   undoLastMove(): Promise<string>;
@@ -73,7 +73,7 @@ export interface RouterServices {
 export async function handleRequest(request: RuntimeRequest, services: RouterServices): Promise<unknown> {
   const { organizer, scan, settings, normalizeBaseUrl } = services;
   switch (request.type) {
-    case 'state:get': return organizer.getDashboardState();
+    case 'state:get': return organizer.getDashboardState(request.view);
     case 'settings:update': {
       const patch = { ...request.settings };
       if (patch.baseUrl !== undefined) patch.baseUrl = normalizeBaseUrl(patch.baseUrl);

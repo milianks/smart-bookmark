@@ -31,12 +31,13 @@ it('arms durable recovery before fast continuation and resumes on an alarm after
   state.smartBookmarkRootId = 'smart-root';
   state.smartBookmarkInitialized = true;
   vi.stubGlobal('chrome', {
-    bookmarks: { onCreated: event(), onRemoved: event(), onImportBegan: event(), onImportEnded: event() },
-    storage: { local: {
+    bookmarks: { onCreated: event(), onRemoved: event(), onImportBegan: event(), onImportEnded: event(),
+      onChanged: event(), onMoved: event(), onChildrenReordered: event() },
+    storage: { onChanged: event(), local: {
       get: async () => ({ 'ai-bookmark-manager.state.v1': state }),
       set: async () => {}, setAccessLevel: async () => {},
     } },
-    runtime: { onStartup: event(), onInstalled: event(), onMessage: event() },
+    runtime: { onConnect: event(), onStartup: event(), onInstalled: event(), onMessage: event() },
     notifications: { onClicked: event() },
     alarms: { create, onAlarm },
   });

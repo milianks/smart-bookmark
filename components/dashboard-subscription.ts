@@ -1,7 +1,7 @@
-const STATE_KEY = 'ai-bookmark-manager.state.v1';
-
 export function subscribeDashboard(refresh: () => Promise<void>, onError: (reason: unknown) => void): () => void {
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  let port: chrome.runtime.Port | undefined;
   let running = false;
   let pending = false;
   let disposed = false;
@@ -19,17 +19,44 @@ export function subscribeDashboard(refresh: () => Promise<void>, onError: (reaso
     }, 100);
   }
 
-  function onChanged(changes: Record<string, chrome.storage.StorageChange>, area: string) {
-    if (area !== 'local' || !Object.prototype.hasOwnProperty.call(changes, STATE_KEY)) return;
+  function onMessage(message: unknown) {
+    if (!message || typeof message !== 'object' || !('type' in message) || message.type !== 'state:changed') return;
     pending = true;
     schedule();
   }
 
-  chrome.storage.onChanged.addListener(onChanged);
+  function reconnect() {
+    // Reading lastError consumes Chrome's disconnect error when the worker disappears.
+    void chrome.runtime.lastError;
+    port?.onMessage.removeListener(onMessage);
+    port?.onDisconnect.removeListener(reconnect);
+    port = undefined;
+    if (!disposed) reconnectTimer = setTimeout(connect, 1000);
+  }
+
+  function connect() {
+    reconnectTimer = undefined;
+    if (disposed) return;
+    try {
+      port = chrome.runtime.connect({ name: 'dashboard' });
+      port.onMessage.addListener(onMessage);
+      port.onDisconnect.addListener(reconnect);
+      pending = true;
+      schedule();
+    } catch (reason) {
+      onError(reason);
+      reconnect();
+    }
+  }
+
+  connect();
   return () => {
     disposed = true;
     if (timer) clearTimeout(timer);
-    chrome.storage.onChanged.removeListener(onChanged);
+    if (reconnectTimer) clearTimeout(reconnectTimer);
+    port?.onMessage.removeListener(onMessage);
+    port?.onDisconnect.removeListener(reconnect);
+    port?.disconnect();
   };
 }
 

@@ -1,7 +1,7 @@
-import type { BookmarkMetadata, DashboardState, Settings, SettingsDraft } from './domain';
+import type { BookmarkMetadata, DashboardResponse, DashboardView, Settings, SettingsDraft } from './domain';
 
 export type RuntimeRequest =
-  | { type: 'state:get' }
+  | { type: 'state:get'; view?: DashboardView }
   | { type: 'settings:update'; settings: Partial<Settings> }
   | { type: 'provider:test' }
   | { type: 'settings-draft:get' }
@@ -17,7 +17,7 @@ export type RuntimeRequest =
   | { type: 'bookmark:metadata:generate'; bookmarkId: string };
 
 export type RuntimeData =
-  | DashboardState
+  | DashboardResponse
   | { saved: true }
   | { connected: true; model: string }
   | { draft: SettingsDraft | null }

@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Required quality gate and validation rules"}
+{"file": ".trellis/spec/backend/extension-runtime-contract.md", "reason": "Verify no regression of storage/mutation contracts"}

@@ -44,7 +44,7 @@ export function ReviewApp({ embedded = false, scanId: initialScanId, onBack }: {
   const [overrideFolder, setOverrideFolder] = useState('');
 
   const [refresh] = useState(() => createLatestRefresh(
-    async () => unwrapResponse<DashboardState>(await sendMessage({ type: 'state:get' })),
+    async () => unwrapResponse<DashboardState>(await sendMessage({ type: 'state:get', view: 'review' })),
     setState,
     (reason) => setError(messageOf(reason)),
   ));

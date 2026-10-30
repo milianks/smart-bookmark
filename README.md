@@ -6,7 +6,7 @@
 ![Chrome MV3](https://img.shields.io/badge/Chrome-MV3-4285F4?logo=google-chrome&logoColor=white)
 ![Node](https://img.shields.io/badge/Node-%E2%89%A520-339933?logo=node.js&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
-![Version](https://img.shields.io/badge/version-0.2.2-blue)
+![Version](https://img.shields.io/badge/version-0.2.3-blue)
 [![Changelog](https://img.shields.io/badge/changelog-view-blue)](CHANGELOG.md)
 
 配置任意 OpenAI 兼容 API 后，扩展会监听新增书签、读取已有文件夹树、优先复用最接近的目录，并在低置信度或需要新建目录时等待你确认。所有数据保存在本机，不上传整套书签库。
