@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { OpenAICompatibleProvider } from '../lib/ai/openai-compatible';
+import { OpenAICompatibleProvider, ProviderError, ProviderTruncatedError } from '../lib/ai/openai-compatible';
 import { ChromeStateRepository, type LocalStorageArea } from '../lib/storage/repository';
 import { ClassificationService, PermissionRequiredError } from '../services/classifier.service';
 import { DEFAULT_SETTINGS } from '../types/domain';
@@ -905,14 +905,18 @@ describe('OpenAICompatibleProvider', () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
-  it('响应被 max_tokens 截断时给出可重试的独立错误', async () => {
-    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
-      choices: [{ finish_reason: 'length', message: { content: '{"action":"keep","confidence":0.9,"rea' } }],
-    }), { status: 200 }));
+  it.each([
+    { protocol: 'openai-chat-completions' as const, payload: { choices: [{ finish_reason: 'length', message: { content: '{"action":"keep"' } }] } },
+    { protocol: 'anthropic-messages' as const, payload: { stop_reason: 'max_tokens', content: [] } },
+    { protocol: 'openai-responses' as const, payload: { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [] } },
+  ])('$protocol 截断抛出可重试的 ProviderTruncatedError', async ({ protocol, payload }) => {
+    const fetcher = vi.fn<typeof fetch>(async () => new Response(JSON.stringify(payload), { status: 200 }));
     const provider = new OpenAICompatibleProvider(fetcher);
+    const request = provider.classify(input, [], { ...baseConfig, protocol });
 
-    await expect(provider.classify(input, [], { ...baseConfig, protocol: 'openai-chat-completions' })).rejects.toMatchObject({
-      name: 'ProviderError',
+    await expect(request).rejects.toBeInstanceOf(ProviderTruncatedError);
+    await expect(request).rejects.toBeInstanceOf(ProviderError);
+    await expect(request).rejects.toMatchObject({
       message: 'AI 响应被截断，请重试或减少书签数量',
       retryable: true,
     });

@@ -11,6 +11,7 @@ Errors cross three boundaries: provider/storage/Chrome operations inside service
 ## Error Types
 
 - `ProviderError` in `lib/ai/openai-compatible.ts` carries a user-safe message and a `retryable` flag for provider/network failures.
+- `ProviderTruncatedError extends ProviderError` identifies output truncation across all three provider protocols and remains retryable. After the stale-context check, batch classification falls back to sequential single-item classification without consuming attempts for the batch truncation; each single-item error follows normal retry, failure, or permission handling.
 - `PermissionRequiredError` in `services/classifier.service.ts` represents a missing optional API-origin permission.
 - Other service operations currently use normal `Error` instances; there is no shared error hierarchy for every Chrome API failure.
 

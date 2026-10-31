@@ -1,0 +1,32 @@
+{
+  "id": "batch-truncation-fallback",
+  "name": "batch-truncation-fallback",
+  "title": "批量截断改为逐条兜底",
+  "description": "批量分类被 max_tokens 截断时不再整批重试，改为逐条单条分类兜底",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "yuanjiang",
+  "assignee": "yuanjiang",
+  "createdAt": "2026-11-01",
+  "completedAt": null,
+  "branch": "fix/batch-truncation-fallback",
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "lib/ai/openai-compatible.ts",
+    "services/organizer.service.ts",
+    "tests/openai-compatible.test.ts",
+    "tests/organizer.service.test.ts",
+    ".trellis/spec/backend/error-handling.md"
+  ],
+  "notes": "User approved implementation and completion on 2026-11-01. Implemented batch truncation sequential fallback with isolated single-item errors. Final Trellis check passed: typecheck; 17 test files / 302 tests; production build; git diff --check. No lint script. Existing Zod PURE annotation build warnings only. Chrome and live provider smoke tests not performed. Serial fallback latency grows with batch size.",
+  "meta": {}
+}

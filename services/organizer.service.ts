@@ -1,6 +1,6 @@
 import { appendActivity, pruneJobs } from './activity-log';
 import { historicalScanSummary, refreshHistoricalScan } from './scan-state';
-import { ProviderError } from '../lib/ai/openai-compatible';
+import { ProviderError, ProviderTruncatedError } from '../lib/ai/openai-compatible';
 import { PermissionRequiredError, type BatchOutcome, type ClassifierPort } from './classifier.service';
 import { getFoldersWithinRoot, isNodeWithinRoot, type BookmarkPort, type BookmarkNode, SMART_ARCHIVE_FOLDER_NAME } from './bookmark.service';
 import type { StateRepository } from '../lib/storage/repository';
@@ -753,7 +753,18 @@ export class OrganizerService {
               remaining = await this.retryStaleBatch(prepared);
               continue;
             }
-            for (const item of batch) await this.handleClassifyError(item.id, item.job, item.settings, error);
+            if (error instanceof ProviderTruncatedError) {
+              for (const item of batch) {
+                try {
+                  const result = await this.classifyViaProvider(item.job, item.bookmark, item.currentFolder, item.folders, item.settings, item.snapshot);
+                  outcomes.set(item.id, { result });
+                } catch (error) {
+                  outcomes.set(item.id, { error });
+                }
+              }
+            } else {
+              for (const item of batch) await this.handleClassifyError(item.id, item.job, item.settings, error);
+            }
           }
         }
 

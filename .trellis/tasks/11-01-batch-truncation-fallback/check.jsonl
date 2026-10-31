@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify truncation error stays a retryable ProviderError and spec note added"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Quality gate: typecheck, test, build, diff --check"}

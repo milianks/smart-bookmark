@@ -14,6 +14,13 @@ export class ProviderError extends Error {
   }
 }
 
+export class ProviderTruncatedError extends ProviderError {
+  constructor() {
+    super('AI 响应被截断，请重试或减少书签数量', true);
+    this.name = 'ProviderTruncatedError';
+  }
+}
+
 const BatchResultSchema = z.object({
   results: z.array(z.unknown()),
 }).strict();
@@ -513,7 +520,7 @@ function extractToolPayload(payload: Record<string, unknown>, protocol: Provider
 function assertNotTruncated(payload: Record<string, unknown>, protocol: ProviderConfig['protocol']): void {
   const truncated = (reason: unknown) => reason === 'length' || reason === 'max_tokens' || reason === 'max_output_tokens';
   if (protocol === 'anthropic-messages') {
-    if (truncated(payload.stop_reason)) throw new ProviderError('AI 响应被截断，请重试或减少书签数量', true);
+    if (truncated(payload.stop_reason)) throw new ProviderTruncatedError();
     return;
   }
   if (protocol === 'openai-responses') {
@@ -521,7 +528,7 @@ function assertNotTruncated(payload: Record<string, unknown>, protocol: Provider
     const reason = typeof details === 'object' && details !== null
       ? (details as Record<string, unknown>).reason
       : undefined;
-    if (payload.status === 'incomplete' && truncated(reason)) throw new ProviderError('AI 响应被截断，请重试或减少书签数量', true);
+    if (payload.status === 'incomplete' && truncated(reason)) throw new ProviderTruncatedError();
     return;
   }
   const choices = payload.choices;
@@ -529,7 +536,7 @@ function assertNotTruncated(payload: Record<string, unknown>, protocol: Provider
   const reason = firstChoice && typeof firstChoice === 'object'
     ? (firstChoice as Record<string, unknown>).finish_reason
     : undefined;
-  if (truncated(reason)) throw new ProviderError('AI 响应被截断，请重试或减少书签数量', true);
+  if (truncated(reason)) throw new ProviderTruncatedError();
 }
 
 /**

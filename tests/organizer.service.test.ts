@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ClassificationService, type ClassifierPort } from '../services/classifier.service';
-import { OpenAICompatibleProvider, type ClassifierProvider } from '../lib/ai/openai-compatible';
+import { ClassificationService, PermissionRequiredError, type ClassifierPort } from '../services/classifier.service';
+import { OpenAICompatibleProvider, ProviderError, ProviderTruncatedError, type ClassifierProvider } from '../lib/ai/openai-compatible';
 import type { ClassificationInput, RecentCorrection } from '../lib/ai/prompts';
 import type { ProviderConfig } from '../lib/ai/provider-config';
 import { ChromeBookmarkService, getFoldersWithinRoot, isNodeWithinRoot, type BookmarkApi, type BookmarkNode, type BookmarkPort } from '../services/bookmark.service';
@@ -387,6 +387,80 @@ describe('OrganizerService', () => {
     expect(state.reviews.b1?.status).toBe('pending');
     expect(state.reviews.b2?.status).toBe('pending');
     expect(state.reviews.b3?.status).toBe('pending');
+  });
+
+  it.each([
+    { label: '全部成功', error: undefined, status: 'pending_review', attempts: 0 },
+    { label: '单条瞬时错误', error: new ProviderError('暂时不可用', true), status: 'queued', attempts: 1 },
+    { label: '单条再次截断', error: new ProviderTruncatedError(), status: 'queued', attempts: 1 },
+    { label: '单条格式错误', error: new ProviderError('格式错误', false), status: 'failed', attempts: 0 },
+    { label: '单条缺少权限', error: new PermissionRequiredError(), status: 'awaiting_permission', attempts: 0 },
+  ])('批量截断逐条兜底：$label', async ({ error, status, attempts }) => {
+    const ids = Array.from({ length: 15 }, (_, index) => `b${index + 1}`);
+    for (const id of ids.slice(1)) bookmarks.addBookmark(id, id, `https://example.com/${id}`, 'smart-root');
+    const batch = vi.fn().mockRejectedValue(new ProviderTruncatedError());
+    const single = vi.fn<ClassifierPort['classify']>(async (input) => {
+      if (input.title === 'b2' && error) throw error;
+      return { result, source: 'ai' };
+    });
+    const schedule = vi.fn();
+    const batchOrganizer = new OrganizerService({
+      bookmarks, store, classifier: { classify: single, classifyBatch: batch }, notifications,
+      alarms: { schedule }, hasProviderPermission: async () => true, now: () => 1_000,
+    });
+    await store.update((state) => {
+      for (const id of ids) {
+        const node = bookmarks.nodes.get(id)!;
+        state.jobs[id] = {
+          bookmark: { id, title: node.title ?? '', url: node.url ?? '', parentId: 'smart-root' },
+          status: 'queued', attempts: 0, createdAt: 1, updatedAt: 1, scanId: 'scan-batch',
+        };
+      }
+    });
+
+    await batchOrganizer.processPending();
+
+    expect(batch).toHaveBeenCalledOnce();
+    expect(batch.mock.calls[0]?.[0]).toHaveLength(15);
+    expect(single).toHaveBeenCalledTimes(15);
+    const state = await store.load();
+    for (const id of ids) {
+      expect(state.jobs[id]).toMatchObject({
+        status: id === 'b2' ? status : 'pending_review',
+        attempts: id === 'b2' ? attempts : 0,
+      });
+      if (id !== 'b2' || !error) expect(state.reviews[id]?.status).toBe('pending');
+      else expect(state.reviews[id]).toBeUndefined();
+    }
+    if (attempts) {
+      expect(state.jobs.b2?.nextAttemptAt).toBe(2_500);
+      expect(schedule).toHaveBeenCalledWith(1_500);
+    }
+    expect(bookmarks.moves).toEqual([]);
+  });
+
+  it('非截断批量瞬时错误仍整批退避，不触发单条兜底', async () => {
+    const batch = vi.fn().mockRejectedValue(new ProviderError('暂时不可用', true));
+    classifier.classifyBatch = batch;
+    bookmarks.addBookmark('b2', 'React docs', 'https://example.com/react', 'smart-root');
+    await store.update((state) => {
+      for (const id of ['b1', 'b2']) {
+        const node = bookmarks.nodes.get(id)!;
+        state.jobs[id] = {
+          bookmark: { id, title: node.title ?? '', url: node.url ?? '', parentId: 'smart-root' },
+          status: 'queued', attempts: 0, createdAt: 1, updatedAt: 1, scanId: 'scan-batch',
+        };
+      }
+    });
+
+    await organizer.processPending();
+
+    expect(batch).toHaveBeenCalledOnce();
+    expect(classifier.classify).not.toHaveBeenCalled();
+    const state = await store.load();
+    for (const id of ['b1', 'b2']) expect(state.jobs[id]).toMatchObject({ status: 'queued', attempts: 1 });
+    expect(state.reviews).toEqual({});
+    expect(bookmarks.moves).toEqual([]);
   });
 
   it('批量准备期间目录和设置变化时丢弃旧快照，重试后使用一致的目录和学习状态', async () => {
