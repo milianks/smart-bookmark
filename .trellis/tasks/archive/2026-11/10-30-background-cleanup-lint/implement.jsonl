@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Coding style conventions to encode in lint rules"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend conventions incl. React hooks"}

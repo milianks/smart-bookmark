@@ -1,0 +1,30 @@
+{
+  "id": "optimization-roadmap",
+  "name": "optimization-roadmap",
+  "title": "规模化性能与可维护性优化",
+  "description": "汇总大书签量下的性能瓶颈与可维护性改进，拆为三个可独立验证的子任务",
+  "status": "completed",
+  "dev_type": null,
+  "scope": null,
+  "package": null,
+  "priority": "P2",
+  "creator": "yuanjiang",
+  "assignee": "yuanjiang",
+  "createdAt": "2026-10-30",
+  "completedAt": "2026-11-01",
+  "branch": null,
+  "base_branch": "master",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "10-30-storage-dashboard-perf",
+    "10-30-split-organizer-service",
+    "10-30-background-cleanup-lint"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
