@@ -387,3 +387,25 @@ Added account-named Chrome smart bookmark root with default folders and strict r
 ### Status
 
 [OK] **Completed**
+
+
+## Session 16: 批量截断逐条兜底完成
+<!-- trellis-session: v=2 fp=8287d3e554193c4b -->
+
+**Date**: 2026-11-01
+**Task**: 批量截断逐条兜底完成
+**Branch**: `fix/batch-truncation-fallback`
+
+### Summary
+
+新增 ProviderTruncatedError，批量截断后串行单条兜底，不消耗批量 attempts；保留单条重试、权限、失败及上下文检查。补齐三协议和15条批次回归，更新错误处理规范。Trellis 最终审核通过：typecheck、17文件302测试、build、diff --check。无lint脚本；真实Chrome与在线provider未验证，串行兜底耗时随批次增长。任务已归档。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `9e0da18` | fix(ai): 批量分类截断后逐条兜底 |
+
+### Status
+
+[OK] **Completed**
